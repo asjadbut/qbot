@@ -1,8 +1,9 @@
 import threading
 import customtkinter as ctk
-from qbot.ui.styles import COLORS, FONTS
+from qbot.ui.styles import COLORS, FONTS, patch_dropdown_arrow
 from qbot.jira_client import JiraClient, TicketDetails
 from qbot.settings import load_settings
+from qbot.ui.settings_dialog import GITHUB_MODELS
 from qbot.config import config
 
 
@@ -151,10 +152,13 @@ class TicketView(ctk.CTkFrame):
                 button_hover_color=COLORS["accent_hover"],
                 dropdown_fg_color=COLORS["bg_card"],
                 dropdown_hover_color=COLORS["accent"],
+                dropdown_text_color=COLORS["text"],
                 text_color=COLORS["text"],
+                text_color_disabled=COLORS["text_dim"],
                 height=38,
             )
             self.url_dropdown.pack(fill="x", padx=12, pady=(10, 4))
+            patch_dropdown_arrow(self.url_dropdown)
         else:
             self.url_entry_field = ctk.CTkEntry(
                 url_card, placeholder_text="https://your-app.com",
@@ -178,25 +182,7 @@ class TicketView(ctk.CTkFrame):
             text_color=COLORS["text_dim"],
         ).pack(padx=14, pady=(4, 4), anchor="w")
 
-        github_models = [
-            "gpt-4o",
-            "gpt-4.1",
-            "gpt-4o-mini",
-            "gpt-4.1-mini",
-            "gpt-5",
-            "gpt-5-mini",
-            "gpt-5-nano",
-            "gpt-5-chat",
-            "o4-mini",
-            "o3-mini",
-            "Codestral-2501",
-            "mistral-small-2503",
-            "mistral-medium-2505",
-            "Meta-Llama-3.1-405B-Instruct",
-            "Llama-3.3-70B-Instruct",
-            "Llama-4-Scout-17B-16E-Instruct",
-            "DeepSeek-R1-0528",
-        ]
+        github_models = GITHUB_MODELS
         self.model_var = ctk.StringVar(value=config.github_model)
         self.model_dropdown = ctk.CTkOptionMenu(
             ai_card,
@@ -208,11 +194,14 @@ class TicketView(ctk.CTkFrame):
             button_hover_color=COLORS["accent_hover"],
             dropdown_fg_color=COLORS["bg_card"],
             dropdown_hover_color=COLORS["accent"],
+            dropdown_text_color=COLORS["text"],
             text_color=COLORS["text"],
+            text_color_disabled=COLORS["text_dim"],
             width=280,
             height=36,
         )
         self.model_dropdown.pack(padx=14, pady=(0, 8), anchor="w")
+        patch_dropdown_arrow(self.model_dropdown)
         ctk.CTkFrame(ai_card, height=4, fg_color="transparent").pack()
 
         # ── RIGHT column: pin Step 4 to BOTTOM first, then preview fills rest ──
@@ -314,7 +303,7 @@ class TicketView(ctk.CTkFrame):
     def _highlight_step(self, active_key: str):
         for key, lbl in self._step_indicators.items():
             if key == active_key:
-                lbl.configure(text_color=COLORS["text_bright"],
+                lbl.configure(text_color=COLORS["btn_text"],
                                fg_color=COLORS["accent"])
             else:
                 lbl.configure(text_color=COLORS["text_dim"],

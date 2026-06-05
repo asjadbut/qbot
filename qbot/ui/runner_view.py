@@ -4,6 +4,7 @@ from qbot.ui.styles import COLORS, FONTS
 from qbot.ai_generator import AIGenerator
 from qbot.test_runner import TestRunner, TestResult
 from qbot.page_crawler import PageCrawler
+from qbot.bitbucket_client import BitbucketClient, format_code_context
 from qbot.jira_client import TicketDetails
 from qbot.config import config
 
@@ -19,8 +20,10 @@ class RunnerView(ctk.CTkFrame):
         self.ai = AIGenerator()
         self.runner = TestRunner()
         self.crawler = PageCrawler(on_log=self._log_threadsafe)
+        self.bitbucket = BitbucketClient(on_log=self._log_threadsafe)
         self.generated_code = ""
         self.page_context = ""
+        self.code_context = ""
         self.exec_result = None
         self._cancelled = threading.Event()
         self._build_ui()
@@ -152,11 +155,14 @@ class RunnerView(ctk.CTkFrame):
             segmented_button_unselected_color=COLORS["bg_card"],
             segmented_button_selected_hover_color=COLORS["accent_hover"],
             text_color=COLORS["text"],
+            command=self._on_tab_change,
         )
         self.tabview.pack(fill="both", expand=True, padx=15, pady=(0, 15))
 
-        for tab in ("Live Log", "Page Context", "Generated Tests", "Test Results"):
+        self._tab_names = ("Live Log", "Page Context", "Generated Tests", "Test Results")
+        for tab in self._tab_names:
             self.tabview.add(tab)
+        self._on_tab_change()
 
         def _tb(tab_name):
             tb = ctk.CTkTextbox(
@@ -203,6 +209,15 @@ class RunnerView(ctk.CTkFrame):
             self.stats_labels[key].configure(text=str(getattr(result, key)))
         self.update()
 
+    def _on_tab_change(self, *_args):
+        """Update tab text colors: white on selected (accent), dark on unselected."""
+        current = self.tabview.get()
+        for name, btn in self.tabview._segmented_button._buttons_dict.items():
+            if name == current:
+                btn.configure(text_color=COLORS["btn_text"])
+            else:
+                btn.configure(text_color=COLORS["text"])
+
     def _cancel(self):
         self._cancelled.set()
         self.cancel_btn.configure(state="disabled", text="Stopping...")
@@ -237,10 +252,13 @@ class RunnerView(ctk.CTkFrame):
             self.after(0, lambda: self.cancel_btn.configure(
                 state="normal",
                 text="Stopped" if is_stopped else "✔ Done",
-                fg_color=COLORS["btn_neutral"] if is_stopped else COLORS["success"],
-                hover_color=COLORS["btn_neutral_hover"] if is_stopped else COLORS["success_dim"],
+                fg_color=COLORS["btn_neutral"] if is_stopped else COLORS["btn_run"],
+                hover_color=COLORS["btn_neutral_hover"] if is_stopped else COLORS["btn_run_hover"],
+                text_color=COLORS["text"] if is_stopped else COLORS["btn_text"],
                 command=self.on_back,
             ))
+            if not is_stopped:
+                self.cancel_btn._text_label.configure(fg="#ffffff")
 
     def _mark_cancelled(self, after: str):
         order = ["crawl", "generate", "execute", "report"]
@@ -266,11 +284,30 @@ class RunnerView(ctk.CTkFrame):
             self.after(0, lambda: self._log(
                 f"\nCrawl complete: {n_pages} pages captured"
             ))
+
+            # Fetch code changes from Bitbucket (if configured)
+            if self.bitbucket.is_configured():
+                self.after(0, lambda: self._log("\nFetching code changes from Bitbucket..."))
+                try:
+                    changes = self.bitbucket.get_ticket_changes(self.ticket.key)
+                    self.code_context = format_code_context(changes)
+                    if changes.commits:
+                        self.after(0, lambda: self._log(f"   {changes.summary}"))
+                    else:
+                        self.after(0, lambda: self._log(f"   {changes.summary}"))
+                except Exception as e:
+                    err_msg = str(e)
+                    self.after(0, lambda msg=err_msg: self._log(f"   Bitbucket fetch failed: {msg} (continuing without code context)"))
+                    self.code_context = ""
+
             self.after(0, lambda: self._set_step("crawl", "done"))
 
             def _show():
                 self.context_text.delete("1.0", "end")
-                self.context_text.insert("1.0", self.page_context or "(No pages captured)")
+                ctx = self.page_context or "(No pages captured)"
+                if self.code_context:
+                    ctx += f"\n\n{'=' * 60}\n\n{self.code_context}"
+                self.context_text.insert("1.0", ctx)
             self.after(0, _show)
 
         except Exception as e:
@@ -287,12 +324,15 @@ class RunnerView(ctk.CTkFrame):
         model = config.github_model
         self.after(0, lambda: self._log(f"   Provider: {provider}  Model: {model}"))
         self.after(0, lambda: self._log(f"   Page context: {len(self.page_context)} chars from {len(self.crawler.snapshots)} pages"))
+        if self.code_context:
+            self.after(0, lambda: self._log(f"   Code context: {len(self.code_context):,} chars from Bitbucket"))
 
         try:
             self.generated_code = self.ai.generate_tests(
                 self.ticket_text,
                 config.target_base_url,
                 page_context=self.page_context,
+                code_context=self.code_context,
             )
             filepath = self.runner.write_test_file(self.generated_code)
 

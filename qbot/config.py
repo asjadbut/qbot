@@ -8,7 +8,7 @@ class Config:
     # AI settings — GitHub Copilot only
     ai_provider: str = "github"
     github_token: str = ""
-    github_model: str = "gpt-4o"
+    github_model: str = "claude-sonnet-4.6"
 
     # Legacy keys kept for migration
     openai_api_key: str = ""
@@ -22,6 +22,11 @@ class Config:
     jira_url: str = ""
     jira_username: str = ""
     jira_password: str = ""  # password or PAT
+
+    # Bitbucket Cloud settings
+    bitbucket_workspace: str = ""
+    bitbucket_repo: str = ""
+    bitbucket_api_token: str = ""
 
     # Test output directory
     test_output_dir: str = ""

@@ -14,14 +14,18 @@ DEFAULTS = {
     "groq_api_key": "",
     "groq_model": "",
     "github_token": "",
-    "github_model": "gpt-4o",
+    "github_model": "claude-sonnet-4.6",
     "jira_url": "",
     "jira_username": "",
     "jira_password": "",
     "remember_jira": False,
     "target_base_url": "",
     "target_urls": [],
+    "bitbucket_workspace": "paradymdev",
+    "bitbucket_repo": "vt.web",
+    "bitbucket_api_token": "",
     "test_output_dir": "",
+    "theme": "dark",
 }
 
 

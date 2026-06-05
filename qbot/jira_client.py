@@ -40,7 +40,10 @@ class JiraClient:
         self._client = None
 
     def login(self, url: str, username: str, password: str) -> bool:
-        """Authenticate with Jira Cloud or Server/Data Center."""
+        """Authenticate with Jira Cloud or Server/Data Center.
+        
+        Both classic and scoped API tokens use Basic auth (email:token).
+        """
         url = _normalise_url(url)
         cloud = _is_cloud(url)
 
@@ -69,9 +72,12 @@ class JiraClient:
                     if cloud:
                         raise ConnectionError(
                             "Authentication failed (401).\n\n"
-                            "⚠️  Jira Cloud (atlassian.net) requires an API Token, not your password.\n"
-                            "Generate one at: https://id.atlassian.com/manage-profile/security/api-tokens\n"
-                            "Then use it in the Password field."
+                            "Jira Cloud requires an API Token in the Password field.\n\n"
+                            "Option 1: Classic API token\n"
+                            "  id.atlassian.com \u2192 Security \u2192 Create API token\n\n"
+                            "Option 2: Scoped API token\n"
+                            "  id.atlassian.com \u2192 Security \u2192 API tokens with scopes\n"
+                            "  App: Jira  |  Scopes: read:jira-work, read:jira-user"
                         )
                     raise ConnectionError(
                         "Authentication failed (401).\nCheck your username and password/PAT."

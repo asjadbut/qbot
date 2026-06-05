@@ -1,10 +1,16 @@
+import os
 import customtkinter as ctk
-from qbot.ui.styles import COLORS
+from qbot.ui.styles import COLORS, set_theme
 from qbot.ui.login_view import LoginView
 from qbot.ui.ticket_view import TicketView
 from qbot.ui.runner_view import RunnerView
 from qbot.ui.settings_dialog import SettingsDialog
 from qbot.jira_client import JiraClient, TicketDetails
+from qbot.settings import load_settings
+
+# Resolve icon path (works both in dev and PyInstaller bundle)
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ICO_PATH = os.path.join(_ROOT, "qbot.ico")
 
 
 class QBotApp(ctk.CTk):
@@ -17,17 +23,26 @@ class QBotApp(ctk.CTk):
         self.title("QBot — AI-Powered Test Automation")
         self.geometry("1100x750")
         self.minsize(900, 650)
-        self.configure(fg_color=COLORS["bg_dark"])
 
-        # Set appearance
-        ctk.set_appearance_mode("dark")
+        # Apply saved theme
+        saved_theme = load_settings().get("theme", "dark")
+        set_theme(saved_theme)
+        ctk.set_appearance_mode(saved_theme)
         ctk.set_default_color_theme("dark-blue")
+
+        self.configure(fg_color=COLORS["bg_dark"])
 
         # Center on screen
         self.update_idletasks()
-        x = (self.winfo_screenwidth() - 1100) // 2
-        y = (self.winfo_screenheight() - 750) // 2
-        self.geometry(f"+{x}+{y}")
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        x = (sw - 1100) // 2
+        y = max(0, (sh - 750) // 2 - 40)  # offset for taskbar
+        self.geometry(f"1100x750+{x}+{y}")
+
+        # Set window icon
+        if os.path.exists(_ICO_PATH):
+            self.iconbitmap(_ICO_PATH)
 
         # State
         self.jira_client: JiraClient = None
@@ -44,11 +59,10 @@ class QBotApp(ctk.CTk):
     def _open_settings(self):
         dialog = SettingsDialog(self)
         self.wait_window(dialog)
-        # Refresh current view so settings changes take effect immediately
-        if isinstance(self.current_view, TicketView):
-            self._show_ticket_view()
-        elif isinstance(self.current_view, LoginView):
-            self._show_login()
+        # Refresh current view only if settings were actually saved
+        if getattr(dialog, 'saved', False):
+            if isinstance(self.current_view, TicketView):
+                self._show_ticket_view()
 
     def _show_login(self):
         self._clear_view()

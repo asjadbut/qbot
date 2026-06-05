@@ -1,7 +1,14 @@
+import os
 import customtkinter as ctk
+from PIL import Image
 from qbot.ui.styles import COLORS, FONTS
 from qbot.config import config
 from qbot.settings import load_settings, save_settings
+
+_LOGO_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "qbot_logo.png",
+)
 
 
 class LoginView(ctk.CTkFrame):
@@ -18,8 +25,16 @@ class LoginView(ctk.CTkFrame):
         # VS Code–style title bar strip
         stripe = ctk.CTkFrame(self, fg_color=COLORS["bg_card"], height=35, corner_radius=0)
         stripe.pack(fill="x", side="top")
-        ctk.CTkLabel(stripe, text="  ⬡ QBot  —  AI Test Automation",
-                     font=FONTS["small"], text_color=COLORS["text_dim"]).pack(side="left", padx=8)
+        stripe.pack_propagate(False)
+        stripe_row = ctk.CTkFrame(stripe, fg_color="transparent")
+        stripe_row.pack(side="left", padx=8)
+        if os.path.exists(_LOGO_PATH):
+            small_logo = ctk.CTkImage(light_image=Image.open(_LOGO_PATH),
+                                      dark_image=Image.open(_LOGO_PATH),
+                                      size=(18, 18))
+            ctk.CTkLabel(stripe_row, image=small_logo, text="").pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(stripe_row, text="QBot  —  AI Test Automation",
+                     font=FONTS["small"], text_color=COLORS["text_dim"]).pack(side="left")
 
         # Center container
         center = ctk.CTkFrame(self, fg_color=COLORS["bg_card"], corner_radius=8,
@@ -30,18 +45,16 @@ class LoginView(ctk.CTkFrame):
         logo_row = ctk.CTkFrame(center, fg_color="transparent")
         logo_row.pack(pady=(28, 0))
 
-        ctk.CTkLabel(logo_row, text="⬡", font=("Segoe UI", 36), text_color=COLORS["accent"]).pack(side="left")
-        ctk.CTkLabel(logo_row, text=" QBot", font=FONTS["title"], text_color=COLORS["text"]).pack(side="left")
+        if os.path.exists(_LOGO_PATH):
+            logo_img = ctk.CTkImage(light_image=Image.open(_LOGO_PATH),
+                                    dark_image=Image.open(_LOGO_PATH),
+                                    size=(40, 40))
+            ctk.CTkLabel(logo_row, image=logo_img, text="").pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(logo_row, text="QBot", font=FONTS["title"], text_color=COLORS["text"]).pack(side="left")
 
         ctk.CTkLabel(center, text="AI-Powered Test Automation",
                      font=FONTS["body"], text_color=COLORS["accent"]).pack(pady=(4, 4))
 
-        # Settings button
-        ctk.CTkButton(
-            center, text="⚙  Settings", width=110, height=28,
-            font=FONTS["small"], fg_color=COLORS["bg_input"], hover_color=COLORS["btn_neutral"],
-            text_color=COLORS["text_dim"], corner_radius=4, command=self.on_settings,
-        ).pack(pady=(0, 18))
 
         # Divider
         ctk.CTkFrame(center, fg_color=COLORS["border"], height=1).pack(fill="x", padx=30, pady=(0, 18))
@@ -80,8 +93,8 @@ class LoginView(ctk.CTkFrame):
         self.login_btn = ctk.CTkButton(
             center, text="Connect to Jira", width=0, height=44,
             font=FONTS["body_bold"], fg_color=COLORS["accent"],
-            hover_color=COLORS["accent_hover"], corner_radius=4,
-            command=self._handle_login,
+            hover_color=COLORS["accent_hover"], text_color=COLORS["btn_text"],
+            corner_radius=4, command=self._handle_login,
         )
         self.login_btn.pack(fill="x", padx=35, pady=(14, 28))
 
@@ -197,15 +210,7 @@ class LoginView(ctk.CTkFrame):
             font=FONTS["body"],
             text_color=COLORS["text_dim"],
         )
-        subtitle.pack(pady=(0, 10))
-
-        # Settings button
-        settings_btn = ctk.CTkButton(
-            center, text="⚙ Settings", width=100, height=30,
-            font=FONTS["small"], fg_color=COLORS["border"],
-            hover_color=COLORS["bg_input"], command=self.on_settings,
-        )
-        settings_btn.pack(pady=(0, 20))
+        subtitle.pack(pady=(0, 20))
 
         # Jira URL
         ctk.CTkLabel(center, text="Jira Server URL", font=FONTS["body_bold"], text_color=COLORS["text"]).pack(
@@ -281,6 +286,7 @@ class LoginView(ctk.CTkFrame):
             font=FONTS["body_bold"],
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
+            text_color=COLORS["btn_text"],
             command=self._handle_login,
         )
         self.login_btn.pack(padx=40, pady=(10, 30))

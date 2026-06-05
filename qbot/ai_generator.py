@@ -1,6 +1,7 @@
 import json
 import time
 from qbot.config import config
+from qbot.copilot_auth import get_copilot_token, COPILOT_API_BASE
 
 SYSTEM_PROMPT = """You are an expert QA automation engineer. You generate Playwright test code in Python using pytest-playwright.
 
@@ -13,9 +14,26 @@ Rules:
 6. Handle common patterns: form submissions, navigation, modals, dropdowns, API responses.
 7. Add brief docstrings explaining what each test validates.
 8. Group related tests in a single class when appropriate.
-9. Include both positive and negative test cases.
-10. Do NOT include any markdown formatting, code fences, or explanations outside the code.
-11. Output ONLY the Python code, nothing else.
+9. Do NOT include any markdown formatting, code fences, or explanations outside the code.
+10. Output ONLY the Python code, nothing else.
+
+TEST SCOPE — CRITICAL (read carefully, violations cause test failures):
+- Generate ONLY tests that directly verify the requirements stated in the Jira ticket. Do NOT invent extra tests beyond the ticket scope.
+- Count the distinct requirements in the ticket. Your test count should be CLOSE to that number (±2). If a ticket has 8 requirements, generate roughly 8-10 tests — NOT 19 or 36.
+- Think like a professional QA engineer: test the BEHAVIOR described in the ticket, not every individual UI element.
+- Do NOT generate ANY of these types of tests unless the ticket EXPLICITLY requires them:
+    NEVER: Individual tests to verify each item in a list separately. Write ONE test that checks all items.
+    NEVER: Tests that verify standard buttons (Save, Cancel) exist — these are part of the page, not the feature.
+    NEVER: Tests that verify table structure, column counts, header row visibility, or heading existence.
+    NEVER: Tests that check element attributes (voiceid, href, class) unless the ticket specifies those attributes.
+    NEVER: Tests for sorting/ordering unless the ticket says "items must be sorted" — just verify the items exist.
+    NEVER: Tests that duplicate the same check in different ways.
+    NEVER: Tests for sections or elements that already existed and are NOT mentioned in the ticket.
+    NEVER: "Cancel button discards changes" tests unless the ticket mentions cancel behavior.
+    NEVER: Negative/edge case tests that test behavior NOT described in the ticket (e.g. "what if no voice is selected").
+- Each ticket requirement = roughly ONE test. If a requirement says "add 7 new voices", write ONE test that checks all 7.
+- Focus on FUNCTIONAL behavior: can the user perform the actions described? Do the changes work as specified?
+- Include negative/edge case tests ONLY when they are meaningful for the specific feature (e.g. validation rules mentioned in the ticket).
 
 CRITICAL FIXTURE RULES — do NOT violate these:
 - Do NOT define a `page` fixture. The conftest.py already provides a pre-authenticated `page` fixture.
@@ -34,6 +52,17 @@ ROBUST TEST PATTERNS — follow these to avoid flaky tests:
 - After clicking Save/Submit buttons, the page may navigate to a completely different page. If you need to verify saved state, navigate back to the original page with page.goto() after the save.
 - Use page.wait_for_timeout(1000) sparingly after actions that may trigger animations or async updates.
 - For checkboxes, after save + navigate back, use page.locator("#id").is_checked() or expect(...).to_be_checked() with a fresh page load.
+- IMPORTANT: is_checked(), to_be_checked(), check(), uncheck() ONLY work on native <input type="checkbox"> or <input type="radio"> elements. If the page uses custom checkbox components (divs, spans with classes like ".voice-checkbox", ".custom-checkbox", etc.), do NOT use any of these methods. Instead:
+  For checking state: look for CSS classes or aria attributes.
+  For toggling: use .click() instead of .check()/.uncheck().
+    GOOD: page.locator(".voice-checkbox").first.click()  # toggle custom checkbox
+    GOOD: assert "checked" in page.locator(".voice-checkbox").first.get_attribute("class")
+    GOOD: expect(page.locator(".voice-checkbox[aria-checked='true']").first).to_be_visible()
+    BAD:  page.locator(".voice-checkbox").first.is_checked()   # Error: Not a checkbox
+    BAD:  page.locator(".voice-checkbox").first.check()         # Error: Not a checkbox
+    BAD:  page.locator(".voice-checkbox").first.uncheck()       # Error: Not a checkbox
+  Look at the page context DOM to determine if checkboxes are native <input> elements or custom components before choosing the approach.
+  If the DOM shows <input type="checkbox" id="chkVoice">, then .check()/.uncheck()/.is_checked() are safe to use on that specific locator.
 - Prefer expect() with timeout for assertions that may need the page to settle: expect(page.locator(...)).to_be_visible(timeout=10000)
 
 ASP.NET / LEGACY WEB APP PATTERNS — this app uses ASP.NET WebForms:
@@ -96,17 +125,15 @@ COVERAGE_REVIEW_PROMPT = """You are an expert QA engineer reviewing test coverag
 
 Your task:
 1. Identify which requirements from the ticket are NOT covered by existing tests.
-2. Identify edge cases and negative scenarios that are missing.
-3. Identify any tests that failed and suggest fixes.
-4. List the specific missing test scenarios.
+2. Identify tests that failed and suggest fixes.
+3. Only suggest additional tests for ACTUAL requirements from the ticket that are missing. Do NOT suggest trivial tests like verifying individual element existence, button presence, or table structure unless the ticket specifically requires them.
 
 Output your analysis as JSON with this structure:
 {
     "covered_requirements": ["list of requirements that are tested"],
-    "missing_requirements": ["list of requirements NOT tested"],
-    "missing_edge_cases": ["list of edge cases not tested"],
+    "missing_requirements": ["list of requirements from the ticket NOT tested"],
     "failed_test_analysis": [{"test_name": "...", "failure_reason": "...", "suggested_fix": "..."}],
-    "additional_test_scenarios": ["description of each additional test to write"]
+    "additional_test_scenarios": ["description of each additional test to write — only for genuine missing ticket requirements"]
 }
 
 Output ONLY valid JSON, no markdown or explanation.
@@ -117,7 +144,7 @@ MISSING_TESTS_PROMPT = """You are an expert QA automation engineer. Based on the
 Rules:
 1. Generate ONLY the NEW tests - do not repeat existing tests.
 2. Follow the same coding style as the existing tests.
-3. Cover all the missing requirements and edge cases identified.
+3. Cover ONLY the missing ticket requirements identified. Do NOT add trivial element-existence tests.
 4. Include fixes for any failed tests.
 5. Output ONLY valid Python code, no markdown or explanations.
 
@@ -130,12 +157,28 @@ CRITICAL FIXTURE RULES — same as always:
 """
 
 
+# All models are served via Copilot API (api.githubcopilot.com) using OAuth token.
+# This set is checked to route through the Copilot client.
+_COPILOT_API_MODELS = {
+    # Claude
+    'claude-sonnet-4.6', 'claude-opus-4.6', 'claude-opus-4.7',
+    'claude-sonnet-4.5', 'claude-opus-4.5', 'claude-haiku-4.5',
+    # GPT
+    'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2', 'gpt-5.2-codex', 'gpt-5.3-codex',
+    'gpt-5-mini', 'gpt-4o', 'gpt-4.1', 'gpt-4o-mini',
+    # Gemini
+    'gemini-3.1-pro-preview', 'gemini-3-flash-preview', 'gemini-2.5-pro',
+}
+
+
 class AIGenerator:
     def __init__(self):
         self._openai_client = None
         self._anthropic_client = None
         self._groq_client = None
         self._github_client = None
+        self._copilot_client = None
+        self._copilot_token_used = None  # track to detect refresh
 
     def _get_openai(self):
         if not self._openai_client:
@@ -168,12 +211,28 @@ class AIGenerator:
             )
         return self._github_client
 
+    def _get_copilot(self):
+        """Get OpenAI client pointing at Copilot API with a fresh session token."""
+        import openai
+        token = get_copilot_token()
+        # Recreate client if token changed (refreshed)
+        if self._copilot_client is None or self._copilot_token_used != token:
+            self._copilot_client = openai.OpenAI(
+                api_key=token,
+                base_url=COPILOT_API_BASE,
+                timeout=180.0,
+                default_headers={"Editor-Version": "vscode/1.100.0"},
+            )
+            self._copilot_token_used = token
+        return self._copilot_client
+
     # Models that need max_completion_tokens instead of max_tokens
-    _COMPLETION_TOKEN_MODELS = {'o4-mini', 'o3-mini', 'o3', 'gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-5-chat'}
+    _COMPLETION_TOKEN_MODELS = {'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2', 'gpt-5-mini'}
     # Reasoning models that don't support temperature
-    _REASONING_MODELS = {'o4-mini', 'o3-mini', 'o3', 'gpt-5', 'gpt-5-mini', 'gpt-5-nano'}
-    # Models with restricted input token limits (4000 in)
-    _LOW_INPUT_MODELS = {'o4-mini', 'o3-mini', 'o3', 'gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-5-chat'}
+    _REASONING_MODELS = {'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2', 'gpt-5-mini'}
+    # Claude models — use max_tokens
+    _CLAUDE_MODELS = {'claude-sonnet-4.6', 'claude-opus-4.6', 'claude-opus-4.7',
+                      'claude-sonnet-4.5', 'claude-opus-4.5', 'claude-haiku-4.5'}
 
     def _call_ai(self, system: str, user: str) -> str:
         last_err = None
@@ -193,11 +252,18 @@ class AIGenerator:
 
     def _call_ai_once(self, system: str, user: str) -> str:
         if config.ai_provider == "github":
-            client = self._get_github()
             model = config.github_model
+            use_copilot = model in _COPILOT_API_MODELS
+
+            if use_copilot:
+                client = self._get_copilot()
+            else:
+                client = self._get_github()
 
             # Build token limit kwarg
-            if model in self._COMPLETION_TOKEN_MODELS:
+            if model in self._CLAUDE_MODELS:
+                token_kwarg = {"max_tokens": 8000}
+            elif model in self._COMPLETION_TOKEN_MODELS:
                 token_kwarg = {"max_completion_tokens": 4000}
             else:
                 token_kwarg = {"max_tokens": 8000}
@@ -205,13 +271,6 @@ class AIGenerator:
             # Reasoning models don't accept temperature
             if model not in self._REASONING_MODELS:
                 token_kwarg["temperature"] = 0.2
-
-            # Trim messages for models with low input limits
-            if model in self._LOW_INPUT_MODELS:
-                # ~4000 input tokens ≈ ~12000 chars; leave room for system prompt
-                max_user_chars = 8000
-                if len(user) > max_user_chars:
-                    user = user[:max_user_chars] + "\n\n[Context trimmed to fit model limits]"
 
             response = client.chat.completions.create(
                 model=model,
@@ -263,11 +322,13 @@ class AIGenerator:
         else:
             raise ValueError(f"Unknown AI provider: {config.ai_provider}")
 
-    def generate_tests(self, ticket_text: str, base_url: str = "", page_context: str = "") -> str:
-        """Generate Playwright test code from Jira ticket details + real page DOM."""
-        context_block = ""
-        if page_context:
-            context_block = f"""
+    def generate_tests(self, ticket_text: str, base_url: str = "", page_context: str = "", code_context: str = "") -> str:
+        """Generate Playwright test code from Jira ticket details + real page DOM + code changes."""
+
+        def _build_prompt(code_ctx: str = "") -> str:
+            context_block = ""
+            if page_context:
+                context_block += f"""
 
 ## REAL PAGE DOM SNAPSHOTS (from crawling the actual app)
 Use ONLY the selectors, button labels, link text, and form fields shown below.
@@ -276,8 +337,18 @@ If a required element is not visible in the snapshots, write the test to verify 
 
 {page_context}
 """
+            if code_ctx:
+                context_block += f"""
 
-        user_prompt = f"""Generate comprehensive Playwright tests for the following Jira ticket.
+## CODE CHANGES (from repository commits linked to this ticket)
+Use these code changes to understand WHAT was implemented and HOW.
+- Check the exact selectors, CSS classes, and element IDs used in the code
+- Understand conditional logic (v-if, permissions, feature flags) to write both positive and negative tests
+- If the code shows a dropdown menu or modal, test the interaction pattern used in the code
+
+{code_ctx}
+"""
+            return f"""Generate comprehensive Playwright tests for the following Jira ticket.
 
 Target application base URL: {base_url or 'http://localhost:3000'}
 
@@ -288,7 +359,33 @@ Generate a complete test file with all necessary imports and test functions.
 Use ONLY selectors that appear in the DOM snapshots above. Do NOT guess or hallucinate selectors.
 Cover all requirements, acceptance criteria, and reasonable edge cases."""
 
-        code = self._call_ai(SYSTEM_PROMPT, user_prompt)
+        # Try with code context first, then truncate/drop if too large
+        user_prompt = _build_prompt(code_context)
+        try:
+            code = self._call_ai(SYSTEM_PROMPT, user_prompt)
+        except Exception as e:
+            err_str = str(e).lower()
+            if "413" in err_str or "too large" in err_str or "tokens_limit" in err_str:
+                # Retry with truncated code context (half)
+                if code_context and len(code_context) > 500:
+                    half = code_context[:len(code_context) // 3]
+                    user_prompt = _build_prompt(half)
+                    try:
+                        code = self._call_ai(SYSTEM_PROMPT, user_prompt)
+                    except Exception as e2:
+                        if "413" in str(e2).lower() or "too large" in str(e2).lower():
+                            # Drop code context entirely
+                            user_prompt = _build_prompt("")
+                            code = self._call_ai(SYSTEM_PROMPT, user_prompt)
+                        else:
+                            raise
+                else:
+                    # No code context to drop — retry without it
+                    user_prompt = _build_prompt("")
+                    code = self._call_ai(SYSTEM_PROMPT, user_prompt)
+            else:
+                raise
+
         code = self._strip_code_fences(code)
 
         # Validate AI actually produced test code

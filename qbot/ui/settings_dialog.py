@@ -1,182 +1,270 @@
-﻿import customtkinter as ctk
-from qbot.ui.styles import COLORS, FONTS
+﻿import threading
+import webbrowser
+import customtkinter as ctk
+from qbot.ui.styles import COLORS, FONTS, patch_dropdown_arrow
 from qbot.settings import load_settings, save_settings, get_settings_path
 from qbot.config import config
 from qbot.test_runner import find_chrome
+from qbot import copilot_auth
 
 GITHUB_MODELS = [
+    # Claude (via Copilot API)
+    "claude-sonnet-4.6",
+    "claude-opus-4.6",
+    "claude-opus-4.7",
+    "claude-sonnet-4.5",
+    "claude-opus-4.5",
+    "claude-haiku-4.5",
+    # GPT (via Copilot API)
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.2",
+    "gpt-5-mini",
     "gpt-4o",
     "gpt-4.1",
     "gpt-4o-mini",
-    "gpt-4.1-mini",
-    "gpt-5",
-    "gpt-5-mini",
-    "gpt-5-nano",
-    "gpt-5-chat",
-    "o4-mini",
-    "o3-mini",
-    "Codestral-2501",
-    "mistral-small-2503",
-    "mistral-medium-2505",
-    "Meta-Llama-3.1-405B-Instruct",
-    "Llama-3.3-70B-Instruct",
-    "Llama-4-Scout-17B-16E-Instruct",
-    "DeepSeek-R1-0528",
+    # Gemini (via Copilot API)
+    "gemini-3.1-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-2.5-pro",
 ]
 
 
 class SettingsDialog(ctk.CTkToplevel):
-    """Settings window for configuring GitHub Copilot and app preferences."""
+    """Settings window — two-column layout for AI + integrations."""
 
     def __init__(self, parent):
         super().__init__(parent)
         self.title("QBot Settings")
-        self.geometry("540x620")
+        self.geometry("820x620")
         self.resizable(False, False)
         self.configure(fg_color=COLORS["bg_dark"])
         self.transient(parent)
         self.grab_set()
 
+        # Center on screen
         self.update_idletasks()
-        px = parent.winfo_rootx() + (parent.winfo_width() - 540) // 2
-        py = parent.winfo_rooty() + (parent.winfo_height() - 620) // 2
-        self.geometry(f"+{px}+{py}")
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        px = (sw - 820) // 2
+        py = (sh - 620) // 2
+        self.geometry(f"820x620+{px}+{py}")
 
         self.settings = load_settings()
+        self.saved = False
         self._build_ui()
 
     def _build_ui(self):
-        ctk.CTkFrame(self, fg_color=COLORS["bg_card"], height=1, corner_radius=0).pack(fill="x")
+        # Title bar
+        titlebar = ctk.CTkFrame(self, fg_color=COLORS["bg_card"], height=40, corner_radius=0)
+        titlebar.pack(fill="x")
+        titlebar.pack_propagate(False)
+        ctk.CTkLabel(titlebar, text="  \u2699  Settings", font=FONTS["body_bold"],
+                     text_color=COLORS["text"]).pack(side="left", padx=10)
 
-        scroll = ctk.CTkScrollableFrame(self, fg_color=COLORS["bg_dark"])
-        scroll.pack(fill="both", expand=True, padx=15, pady=15)
+        # Two-column container
+        columns = ctk.CTkFrame(self, fg_color=COLORS["bg_dark"])
+        columns.pack(fill="both", expand=True, padx=12, pady=(8, 0))
 
-        ctk.CTkLabel(scroll, text="Settings", font=FONTS["title"],
-                     text_color=COLORS["text"]).pack(pady=(0, 12), anchor="w")
+        # ── LEFT COLUMN: AI & App ──
+        left = ctk.CTkFrame(
+            columns, fg_color=COLORS["bg_dark"], corner_radius=0,
+            border_width=0,
+        )
+        left.pack(side="left", fill="both", expand=True, padx=(0, 6))
 
-        # --- GitHub Copilot ---
-        self._section(scroll, "GitHub Copilot")
+        # ── GitHub Copilot Card ──
+        copilot_card = ctk.CTkFrame(
+            left, fg_color=COLORS["bg_card"], corner_radius=6,
+            border_color=COLORS["border"], border_width=1,
+        )
+        copilot_card.pack(fill="x", pady=(0, 8))
 
-        ctk.CTkLabel(
-            scroll, font=FONTS["small"], text_color=COLORS["text_dim"],
-            wraplength=470, justify="left",
-            text=(
-                "QBot uses your GitHub Copilot subscription to generate tests.\n"
-                "You need a Personal Access Token with 'copilot' scope.\n\n"
-                "How to get your token:\n"
-                "  1. Go to github.com/settings/tokens\n"
-                "  2. Click 'Generate new token (classic)'\n"
-                "  3. Check the 'copilot' scope\n"
-                "  4. Copy the token and paste it below"
-            ),
-        ).pack(padx=20, pady=(4, 10), anchor="w")
+        self._section(copilot_card, "GitHub Copilot")
 
-        self.github_token = self._entry_row(scroll, "Token", self.settings.get("github_token", ""), show="*")
+        # Auth status + Authorize button
+        auth_row = ctk.CTkFrame(copilot_card, fg_color="transparent")
+        auth_row.pack(fill="x", padx=12, pady=(2, 6))
 
-        # Model dropdown
-        model_row = ctk.CTkFrame(scroll, fg_color="transparent")
-        model_row.pack(fill="x", padx=20, pady=(8, 2))
+        authorized = copilot_auth.is_authorized()
+        status_icon = "\u2713" if authorized else "\u2717"
+        status_text = f"{status_icon} Authorized" if authorized else f"{status_icon} Not authorized"
+        status_color = COLORS["success"] if authorized else COLORS["warning"]
+        self.auth_status = ctk.CTkLabel(
+            auth_row, text=status_text, font=FONTS["small"],
+            text_color=status_color,
+        )
+        self.auth_status.pack(side="left")
+
+        self.auth_btn = ctk.CTkButton(
+            auth_row, text="Authorize Copilot" if not authorized else "Re-authorize",
+            width=140, height=28, font=FONTS["small"],
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            text_color=COLORS["btn_text"],
+            corner_radius=4, command=self._start_copilot_auth,
+        )
+        self.auth_btn.pack(side="right")
+
+        self._hint(copilot_card,
+            "Click Authorize to sign in with GitHub.\n"
+            "This grants access to Claude, GPT, and other\n"
+            "models via your Copilot subscription.")
+
+        model_row = ctk.CTkFrame(copilot_card, fg_color="transparent")
+        model_row.pack(fill="x", padx=12, pady=(6, 12))
         ctk.CTkLabel(model_row, text="Model", font=FONTS["body"],
                      text_color=COLORS["text"], width=80, anchor="w").pack(side="left")
-        self.model_var = ctk.StringVar(value=self.settings.get("github_model", "claude-sonnet-4-20250514"))
-        self.model_dropdown = ctk.CTkOptionMenu(
-            model_row,
-            values=GITHUB_MODELS,
-            variable=self.model_var,
-            font=FONTS["body"],
-            fg_color=COLORS["bg_input"],
-            button_color=COLORS["accent"],
-            button_hover_color=COLORS["accent_hover"],
-            dropdown_fg_color=COLORS["bg_card"],
-            dropdown_hover_color=COLORS["accent"],
-            text_color=COLORS["text"],
-            width=320,
-            height=36,
+        self.model_var = ctk.StringVar(value=self.settings.get("github_model", "gpt-4o"))
+        om = ctk.CTkOptionMenu(
+            model_row, values=GITHUB_MODELS, variable=self.model_var,
+            font=FONTS["body"], fg_color=COLORS["bg_input"],
+            button_color=COLORS["accent"], button_hover_color=COLORS["accent_hover"],
+            dropdown_fg_color=COLORS["bg_card"], dropdown_hover_color=COLORS["accent"],
+            dropdown_text_color=COLORS["text"],
+            text_color=COLORS["text"], height=34,
         )
-        self.model_dropdown.pack(side="left", fill="x", expand=True)
+        om.pack(side="left", fill="x", expand=True)
+        patch_dropdown_arrow(om)
 
-        # --- Browser ---
-        self._section(scroll, "Browser")
+        # ── App Settings Card ──
+        app_card = ctk.CTkFrame(
+            left, fg_color=COLORS["bg_card"], corner_radius=6,
+            border_color=COLORS["border"], border_width=1,
+        )
+        app_card.pack(fill="x", pady=(0, 8))
+
+        # Theme
+        self._section(app_card, "Theme")
+        theme_row = ctk.CTkFrame(app_card, fg_color="transparent")
+        theme_row.pack(fill="x", padx=12, pady=(2, 8))
+        self.theme_var = ctk.StringVar(value=self.settings.get("theme", "dark"))
+        for label, val in [("Dark", "dark"), ("Light", "light")]:
+            ctk.CTkRadioButton(
+                theme_row, text=label, variable=self.theme_var, value=val,
+                font=FONTS["body"], text_color=COLORS["text"],
+                fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+                border_color=COLORS["border"],
+            ).pack(side="left", padx=(0, 16))
+
+        # Browser status
+        self._section(app_card, "Browser")
         chrome = find_chrome()
-        chrome_text = f"Google Chrome found:\n   {chrome}" if chrome else (
-            "Google Chrome NOT found.\n"
-            "Install from https://google.com/chrome\n"
-            "Playwright will fall back to bundled Chromium."
-        )
-        chrome_color = COLORS["success"] if chrome else COLORS["error"]
-        ctk.CTkLabel(scroll, text=chrome_text, font=FONTS["small"], text_color=chrome_color,
-                     wraplength=470, justify="left").pack(padx=20, pady=(5, 10), anchor="w")
+        icon = "\u2713" if chrome else "\u2717"
+        text = f"{icon} Google Chrome found" if chrome else f"{icon} Chrome not found \u2014 will use Chromium"
+        color = COLORS["success"] if chrome else COLORS["warning"]
+        ctk.CTkLabel(app_card, text=text, font=FONTS["small"],
+                     text_color=color).pack(padx=12, pady=(2, 8), anchor="w")
 
-        # --- Target Application URLs ---
-        self._section(scroll, "Target Application URLs")
-        ctk.CTkLabel(
-            scroll, font=FONTS["small"], text_color=COLORS["text_dim"],
-            wraplength=470, justify="left",
-            text="Add your application URLs here. They will appear in the\nTarget URL dropdown on the main screen.",
-        ).pack(padx=20, pady=(4, 6), anchor="w")
+        # Target URLs
+        self._section(app_card, "Target Application URLs")
+        self._hint(app_card, "URLs for the target app dropdown on the main screen.")
 
-        url_add_row = ctk.CTkFrame(scroll, fg_color="transparent")
-        url_add_row.pack(fill="x", padx=20, pady=(0, 4))
+        url_row = ctk.CTkFrame(app_card, fg_color="transparent")
+        url_row.pack(fill="x", padx=12, pady=(0, 4))
         self.new_url_entry = ctk.CTkEntry(
-            url_add_row, placeholder_text="https://your-app.com",
-            height=34, font=FONTS["body"],
+            url_row, placeholder_text="https://your-app.com",
+            height=32, font=FONTS["small"],
             fg_color=COLORS["bg_input"], border_color=COLORS["border"],
             text_color=COLORS["text"], corner_radius=4,
         )
-        self.new_url_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self.new_url_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
         self.new_url_entry.bind("<Return>", lambda e: self._add_url())
         ctk.CTkButton(
-            url_add_row, text="+ Add", width=70, height=34,
+            url_row, text="+ Add", width=56, height=32,
             font=FONTS["small"], fg_color=COLORS["accent"],
-            hover_color=COLORS["accent_hover"], corner_radius=4,
-            command=self._add_url,
+            hover_color=COLORS["accent_hover"], text_color=COLORS["btn_text"],
+            corner_radius=4, command=self._add_url,
         ).pack(side="left")
 
-        self.urls_frame = ctk.CTkFrame(scroll, fg_color="transparent")
-        self.urls_frame.pack(fill="x", padx=20, pady=(0, 8))
+        self.urls_frame = ctk.CTkFrame(app_card, fg_color="transparent")
+        self.urls_frame.pack(fill="x", padx=12, pady=(0, 12))
         self._url_widgets = []
         for url in self.settings.get("target_urls", []):
             self._add_url_row(url)
 
-        # --- Save / Cancel ---
-        self.status_label = ctk.CTkLabel(scroll, text="", font=FONTS["small"], text_color=COLORS["success"])
-        self.status_label.pack(pady=(8, 0))
+        # ── RIGHT COLUMN: Integrations ──
+        right = ctk.CTkFrame(
+            columns, fg_color=COLORS["bg_dark"], corner_radius=0,
+            border_width=0,
+        )
+        right.pack(side="left", fill="both", expand=True, padx=(6, 0))
 
-        btn_row = ctk.CTkFrame(scroll, fg_color="transparent")
-        btn_row.pack(fill="x", pady=(8, 5))
+        # ── Bitbucket Cloud Card ──
+        bb_card = ctk.CTkFrame(
+            right, fg_color=COLORS["bg_card"], corner_radius=6,
+            border_color=COLORS["border"], border_width=1,
+        )
+        bb_card.pack(fill="x", pady=(0, 8))
+
+        self._section(bb_card, "Bitbucket Cloud")
+        self._hint(bb_card,
+            "Enrich AI context with code diffs from commits\n"
+            "linked to each Jira ticket.\n\n"
+            "Requires a Bitbucket API Token with scopes:\n"
+            "  id.atlassian.com \u2192 Security \u2192 API tokens\n"
+            "  Create API token \u2192 App: Bitbucket\n"
+            "  Scope: Repositories \u2192 Read")
+        self.bb_workspace = self._field(bb_card, "Workspace", self.settings.get("bitbucket_workspace", ""))
+        self.bb_repo = self._field(bb_card, "Repository", self.settings.get("bitbucket_repo", ""))
+        self.bb_api_token = self._field(bb_card, "API Token", self.settings.get("bitbucket_api_token", ""), show="*")
+
+        # ── More Integrations Card ──
+        more_card = ctk.CTkFrame(
+            right, fg_color=COLORS["bg_card"], corner_radius=6,
+            border_color=COLORS["border"], border_width=1,
+        )
+        more_card.pack(fill="x", pady=(0, 8))
+
+        self._section(more_card, "More Integrations")
+        self._hint(more_card, "GitHub, Azure DevOps, and GitLab\nsupport coming soon.")
+
+        # ── BOTTOM BAR: Save / Cancel ──
+        bottom = ctk.CTkFrame(self, fg_color=COLORS["bg_dark"])
+        bottom.pack(fill="x", padx=12, pady=(8, 12))
 
         ctk.CTkButton(
-            btn_row, text="Save", width=140, height=40,
+            bottom, text="Save", width=140, height=36,
             font=FONTS["body_bold"], fg_color=COLORS["accent"],
-            hover_color=COLORS["accent_hover"], corner_radius=4,
-            command=self._save,
-        ).pack(side="left", padx=(0, 10))
+            hover_color=COLORS["accent_hover"], text_color=COLORS["btn_text"],
+            corner_radius=4, command=self._save,
+        ).pack(side="left")
 
         ctk.CTkButton(
-            btn_row, text="Cancel", width=100, height=40,
+            bottom, text="Cancel", width=100, height=36,
             font=FONTS["body"], fg_color=COLORS["bg_input"],
             hover_color=COLORS["btn_neutral"], corner_radius=4,
             command=self.destroy,
-        ).pack(side="left")
+        ).pack(side="left", padx=(8, 0))
+
+        self.status_label = ctk.CTkLabel(bottom, text="", font=FONTS["small"], text_color=COLORS["success"])
+        self.status_label.pack(side="left", padx=16)
 
         ctk.CTkLabel(
-            scroll, text=f"Config: {get_settings_path()}",
-            font=FONTS["small"], text_color=COLORS["text_dim"], wraplength=490,
-        ).pack(pady=(12, 0), anchor="w")
+            bottom, text=f"Config: {get_settings_path()}",
+            font=("Consolas", 10), text_color=COLORS["text_dim"],
+        ).pack(side="right")
+
+    # ── Helpers ──
 
     def _section(self, parent, text):
         ctk.CTkLabel(parent, text=text.upper(), font=FONTS["small"],
-                     text_color=COLORS["text_dim"]).pack(padx=5, pady=(15, 6), anchor="w")
+                     text_color=COLORS["text_dim"]).pack(padx=12, pady=(14, 4), anchor="w")
 
-    def _entry_row(self, parent, label, value, show=None) -> ctk.CTkEntry:
+    def _hint(self, parent, text):
+        ctk.CTkLabel(parent, font=FONTS["small"], text_color=COLORS["text_dim"],
+                     wraplength=330, justify="left", text=text,
+                     ).pack(padx=12, pady=(0, 6), anchor="w")
+
+    def _field(self, parent, label, value, show=None) -> ctk.CTkEntry:
         row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", padx=20, pady=2)
+        row.pack(fill="x", padx=12, pady=2)
         ctk.CTkLabel(row, text=label, font=FONTS["body"], text_color=COLORS["text"],
                      width=80, anchor="w").pack(side="left")
         entry = ctk.CTkEntry(
-            row, height=36, font=FONTS["body"],
-            fg_color=COLORS["bg_input"], border_color=COLORS["border_bright"],
-            text_color=COLORS["text"], corner_radius=7,
+            row, height=34, font=FONTS["body"],
+            fg_color=COLORS["bg_input"], border_color=COLORS["border"],
+            text_color=COLORS["text"], corner_radius=6,
         )
         if show:
             entry.configure(show=show)
@@ -187,27 +275,36 @@ class SettingsDialog(ctk.CTkToplevel):
 
     def _save(self):
         self.settings["ai_provider"] = "github"
-        self.settings["github_token"] = self.github_token.get().strip()
         self.settings["github_model"] = self.model_var.get()
+        self.settings["theme"] = self.theme_var.get()
         self.settings["target_urls"] = [w["url"] for w in self._url_widgets]
+        self.settings["bitbucket_workspace"] = self.bb_workspace.get().strip()
+        self.settings["bitbucket_repo"] = self.bb_repo.get().strip()
+        self.settings["bitbucket_api_token"] = self.bb_api_token.get().strip()
 
         save_settings(self.settings)
 
-        config.ai_provider = "github"
-        config.github_token = self.settings["github_token"]
-        config.github_model = self.settings["github_model"]
+        # Apply theme
+        from qbot.ui.styles import set_theme
+        set_theme(self.settings["theme"])
+        ctk.set_appearance_mode(self.settings["theme"])
 
-        self.status_label.configure(text="Saved!")
+        config.ai_provider = "github"
+        config.github_model = self.settings["github_model"]
+        config.bitbucket_workspace = self.settings["bitbucket_workspace"]
+        config.bitbucket_repo = self.settings["bitbucket_repo"]
+        config.bitbucket_api_token = self.settings["bitbucket_api_token"]
+
+        self.saved = True
+        self.status_label.configure(text="\u2713 Saved!")
         self.after(1200, self.destroy)
 
     def _add_url(self):
         url = self.new_url_entry.get().strip()
         if not url:
             return
-        # Auto-add https:// if missing
         if not url.startswith("http"):
             url = "https://" + url
-        # Avoid duplicates
         existing = [w["url"] for w in self._url_widgets]
         if url in existing:
             return
@@ -215,14 +312,14 @@ class SettingsDialog(ctk.CTkToplevel):
         self.new_url_entry.delete(0, "end")
 
     def _add_url_row(self, url: str):
-        row = ctk.CTkFrame(self.urls_frame, fg_color=COLORS["bg_input"], corner_radius=4, height=32)
+        row = ctk.CTkFrame(self.urls_frame, fg_color=COLORS["bg_input"], corner_radius=4, height=30)
         row.pack(fill="x", pady=2)
         row.pack_propagate(False)
         ctk.CTkLabel(row, text=url, font=FONTS["small"],
                      text_color=COLORS["text"], anchor="w").pack(side="left", padx=8, fill="x", expand=True)
         entry = {"url": url, "row": row}
         ctk.CTkButton(
-            row, text="×", width=28, height=24,
+            row, text="\u00d7", width=26, height=22,
             font=FONTS["small"], fg_color="transparent",
             hover_color=COLORS["error"], text_color=COLORS["text_dim"],
             corner_radius=4,
@@ -233,3 +330,44 @@ class SettingsDialog(ctk.CTkToplevel):
     def _remove_url(self, entry):
         entry["row"].destroy()
         self._url_widgets.remove(entry)
+
+    def _start_copilot_auth(self):
+        """Kick off the OAuth device flow in a background thread."""
+        self.auth_btn.configure(state="disabled", text="Starting...")
+        self.auth_status.configure(text="Starting device flow...", text_color=COLORS["text_dim"])
+
+        def _run():
+            try:
+                flow = copilot_auth.start_device_flow()
+                user_code = flow["user_code"]
+                device_code = flow["device_code"]
+                interval = flow.get("interval", 5)
+                verify_url = flow["verification_uri"]
+
+                # Update UI with user code
+                self.after(0, lambda: self.auth_status.configure(
+                    text=f"Enter code: {user_code}", text_color=COLORS["accent"]))
+                self.after(0, lambda: self.auth_btn.configure(
+                    state="normal", text="Waiting..."))
+
+                # Open browser
+                webbrowser.open(verify_url)
+
+                # Poll for auth (up to 5 min)
+                copilot_auth.poll_for_token(device_code, interval=interval, timeout=300)
+
+                # Verify it works by exchanging for Copilot token
+                copilot_auth.get_copilot_token()
+
+                self.after(0, lambda: self.auth_status.configure(
+                    text="\u2713 Authorized!", text_color=COLORS["success"]))
+                self.after(0, lambda: self.auth_btn.configure(
+                    state="normal", text="Re-authorize"))
+            except Exception as e:
+                err = str(e)[:80]
+                self.after(0, lambda: self.auth_status.configure(
+                    text=f"\u2717 {err}", text_color=COLORS["error"]))
+                self.after(0, lambda: self.auth_btn.configure(
+                    state="normal", text="Authorize Copilot"))
+
+        threading.Thread(target=_run, daemon=True).start()
