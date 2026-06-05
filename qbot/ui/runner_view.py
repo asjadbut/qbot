@@ -365,6 +365,8 @@ class RunnerView(ctk.CTkFrame):
             for tr in failed_tests:
                 name = tr["name"].replace("test_", "").replace("_", " ").title()
                 self.results_text.insert("end", f"      ✗  {name}\n")
+                if tr.get("message"):
+                    self.results_text.insert("end", f"         → {tr['message']}\n")
             self.results_text.insert("end", "\n")
 
         # Skipped tests

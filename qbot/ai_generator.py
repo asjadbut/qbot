@@ -36,6 +36,48 @@ ROBUST TEST PATTERNS — follow these to avoid flaky tests:
 - For checkboxes, after save + navigate back, use page.locator("#id").is_checked() or expect(...).to_be_checked() with a fresh page load.
 - Prefer expect() with timeout for assertions that may need the page to settle: expect(page.locator(...)).to_be_visible(timeout=10000)
 
+ASP.NET / LEGACY WEB APP PATTERNS — this app uses ASP.NET WebForms:
+- After clicking Save/Submit/Delete buttons (e.g. #btnSaveAuthentication), the page does a full postback. ALWAYS add page.wait_for_load_state("networkidle") THEN page.wait_for_timeout(2000) to let the server process the change before navigating away.
+    GOOD: page.locator("#btnSave").click(); page.wait_for_load_state("networkidle"); page.wait_for_timeout(2000)
+    BAD:  page.locator("#btnSave").click(); page.wait_for_load_state("load")
+- Settings/config changes (enabling checkboxes, changing dropdowns) take effect on the SERVER after the postback completes. If you navigate to another page too early, the setting won't be active yet.
+- When a test enables a setting, saves, and then checks the effect on another page, add sufficient wait after save before navigating.
+
+PAGE TITLE ASSERTIONS:
+- NEVER use expect(page).to_have_title("Exact Title") because page titles often include the site name suffix (e.g. "Roster History" vs "Roster History - Paradym" or "Roster History | My App").
+- Instead, verify the page content with a heading role locator (NOT text= which does substring matching and may match unrelated elements):
+    GOOD: expect(page.get_by_role("heading", name="Roster History")).to_be_visible()
+    BAD:  expect(page).to_have_title("Roster History")
+    BAD:  expect(page.locator("text=Roster History")).to_be_visible()  # matches ANY element containing "Roster History" as substring
+
+URL ASSERTIONS:
+- NEVER use expect(page).to_have_url("/relative/path") — Playwright compares against the FULL URL (https://domain.com/relative/path) and this will fail.
+- Instead, check the URL contains the expected path:
+    GOOD: assert "RosterHistory" in page.url
+    GOOD: assert "/Account/Dashboard" in page.url
+    BAD:  expect(page).to_have_url("/Management/Dashboard/RosterHistory/Office?officeId=12736")
+
+NAVIGATION MENUS & DROPDOWNS:
+- NEVER invent UI elements that don't exist in the page context. Only reference elements, text, and selectors that appear in the provided DOM snapshots or page context.
+- Distinguish between TWO types of dropdowns:
+  1. CSS-hidden nav menus (sidebar/top nav links): These are often invisible and cannot be clicked or hovered even with force=True. Do NOT try to interact with them.
+  2. Bootstrap/Vue dropdown BUTTONS (e.g. "Select an Action" with class="dropdown-toggle"): These ARE visible and clickable. Click the button first, then assert the dropdown items.
+- For VISIBLE dropdown buttons (Bootstrap pattern), click the button to reveal the menu items:
+    GOOD:
+      page.goto("/Management/Dashboard")
+      page.wait_for_load_state("domcontentloaded")
+      page.locator("button:has-text('Select an Action')").click()
+      page.wait_for_timeout(500)
+      expect(page.locator("a:has-text('Roster History')").first).to_be_visible()
+    BAD:
+      expect(page.locator("a:has-text('Roster History')")).to_be_visible()  # hidden inside unopened dropdown
+- For CSS-hidden nav links (sidebar menus), do NOT click — just check the DOM:
+    GOOD: expect(page.locator("a[href*='RosterHistory']")).to_have_count(1)
+    BAD:  page.locator("a:has-text('Account Management')").first.click()  # TimeoutError — element is not visible
+- When Vue uses v-if to conditionally render a link, the element is completely removed from the DOM when the condition is false. Use to_have_count(0) to verify absence:
+    GOOD: expect(page.locator("a:has-text('Roster History')")).to_have_count(0)
+- Note: links inside Vue/SPA dropdown menus often use href="#" with @click.prevent handlers. Do NOT search by href for these — use text-based locators instead.
+
 ELEMENT COUNT & CONTENT ASSERTIONS — critical rules:
 - NEVER use exact counts (== N) for elements unless you counted them yourself in the page context DOM. The page always has pre-existing items. Use >= instead: assert locator.count() >= N
 - NEVER build fragile locator chains like locator("text=X").locator("xpath=following-sibling::table//tr/td[2]"). These break constantly.

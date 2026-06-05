@@ -12,7 +12,7 @@ Jira Ticket → Crawl Target Pages → AI Generates Tests → Playwright Execute
 2. **Crawl** the target app pages mentioned in the ticket — captures real DOM (buttons, inputs, links, selectors)
 3. **AI generates** Playwright tests using the actual page structure
 4. **Playwright executes** the tests in Google Chrome with saved auth state
-5. **Results** displayed with pass/fail per test and raw pytest output
+5. **Results** displayed with pass/fail per test, human-readable failure explanations, and raw pytest output
 
 ---
 
@@ -104,6 +104,7 @@ Add your app URLs in **Settings → Target Application URLs**. These populate th
 - Reuses auth state from crawl step (usually no second login needed)
 - Each test gets a fresh browser tab in the shared authenticated context
 - Results parsed from pytest output: pass/fail counts + individual test names
+- Failed tests show human-readable failure explanations (e.g. "Timed out after 30s — the element exists but is not visible")
 - Raw pytest output shown in Test Results tab for debugging failures
 
 ### Replay
@@ -115,6 +116,37 @@ After pipeline completes, click **▶ Replay Tests** to re-run without regenerat
 ## Browser
 
 QBot uses **Google Chrome** with anti-detection flags. If Chrome is not found, falls back to Playwright's bundled Chromium.
+
+---
+
+## Security & Privacy
+
+### Credentials Are Never Sent to the AI
+
+QBot uses two sets of credentials:
+
+| Credential | Purpose | Sent to AI? |
+|------------|---------|-------------|
+| **GitHub PAT** | Authenticates API calls to GitHub Models | **No** — used only as an HTTP `Authorization` header |
+| **Jira credentials** | Fetches ticket data from Jira REST API | **No** — used only for Jira API authentication |
+| **Browser auth state** | Replays logged-in sessions in Playwright | **No** — used only by the local browser |
+
+**What IS sent to the AI:** Only the Jira ticket text (summary, description, acceptance criteria, comments) and DOM snapshots from crawled pages (headings, buttons, links, form elements). No tokens, passwords, cookies, or session data are ever included in AI prompts.
+
+### Credential Storage
+
+- **Location:** `%APPDATA%\QBot\settings.json` (user-scoped, not shared)
+- **Format:** Plaintext JSON (protected by Windows user-level file permissions)
+- **Jira password:** Only saved if you check "Remember credentials" — otherwise discarded after login
+- **GitHub token:** Saved when entered in Settings
+- **Browser auth state:** Saved as `auth_state.json` in the generated tests directory (contains session cookies from the target app, not QBot credentials)
+
+### What QBot Does NOT Do
+
+- Does not send credentials to any third party beyond their intended API endpoint
+- Does not log, print, or write credentials to console or log files
+- Does not include credentials in generated test code
+- Does not transmit credentials in error messages or stack traces
 
 ---
 
@@ -402,6 +434,41 @@ Applied across `runner_view.py`, `login_view.py`.
 - Done button: stays enabled after pipeline completes, shows green `✔ Done`, clicks back to ticket view
 - Created `.gitignore` with Python, IDE, build, and generated test exclusions
 
+### Phase 19: AI Prompt Learning from Failures (June 5, 2026)
+
+**Prompt:** *"i don't want to fix the tests but the process that created the test so these mistakes won't repeat"*
+
+Iteratively improved the AI system prompt based on real test failures across multiple replay cycles:
+
+**Issues discovered and fixed in the prompt:**
+1. **ASP.NET postback timing** — AI wasn't waiting for `networkidle` + settle after form saves
+2. **Page title assertions** — `to_have_title()` fails when sites append suffixes like " - Paradym"
+3. **URL assertions** — `to_have_url("/relative")` fails because Playwright compares full URLs
+4. **`text=` substring matching** — `text=Roster History` matches both headings AND table cells; use `get_by_role("heading", ...)` instead
+5. **Hidden nav menus** — `click()` and `hover(force=True)` both fail on CSS-hidden elements
+6. **Bootstrap dropdown buttons** — Must click the visible dropdown toggle button before asserting dropdown menu items
+7. **Vue `v-if` conditionals** — When Vue removes elements from DOM, use `to_have_count(0)` not `to_be_visible()`
+8. **Hallucinated UI elements** — AI invented a "Select an Action" dropdown that actually exists but was missed in page context
+
+**Prompt now includes dedicated sections with GOOD/BAD examples for:**
+- Page title assertions (use `get_by_role` not `to_have_title`)
+- URL assertions (use `assert "path" in page.url` not `to_have_url`)
+- Navigation menus (CSS-hidden vs Bootstrap dropdown vs Vue conditional)
+- Element count assertions (use `>=` not `==`)
+
+### Phase 20: Human-Readable Failure Explanations (June 5, 2026)
+
+**Prompt:** *"the tests that failed, the raw output — we should explain in a graceful manner in English why the tests failed"*
+
+**Changes:**
+- Added `_extract_failure_details()` — parses pytest `_ TestName _` sections to extract per-test error blocks
+- Added `_humanize_failure()` — converts raw pytest errors into plain English:
+  - TimeoutError → "Timed out after 30s — the element exists but is not visible (likely hidden in a menu)"
+  - URL assertions → "Expected the URL to NOT contain X, but the page stayed at Y"
+  - Count mismatches → "Expected 1 element(s), but found 0"
+  - Visibility failures → "Expected element to be visible, but it was hidden"
+- Failed tests in the UI now show `→` explanation under each test name
+
 ---
 
 ### Key Lessons Learned
@@ -417,3 +484,7 @@ Applied across `runner_view.py`, `login_view.py`.
 5. **Domain variants in tickets** — Jira tickets commonly reference production URLs while testing is done on dev/staging. URL extraction must handle `my.paradym.com` → `my-dev.paradym.com` rewrites.
 
 6. **Parser robustness** — pytest output format changes between `-v`, `-q`, and combinations. The `===` border padding breaks naive string splitting. Use regex.
+
+7. **Iterative prompt improvement beats one-shot** — Each test failure reveals a pattern the AI doesn't handle. Adding GOOD/BAD examples for each pattern to the system prompt creates a feedback loop that improves all future test generation.
+
+8. **Bootstrap dropdowns ≠ CSS-hidden nav menus** — Two completely different interaction patterns. AI must distinguish between a visible dropdown button (click to open) and a CSS-hidden sidebar link (can't interact, check DOM only).

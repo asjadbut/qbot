@@ -287,6 +287,9 @@ def page(_pw_session):
         passed = failed = errors = skipped = 0
         individual = []
 
+        # Extract failure details from pytest sections like "_ TestClass.test_name _"
+        failure_details = self._extract_failure_details(output)
+
         for line in output.split("\n"):
             line_stripped = line.strip()
 
@@ -297,16 +300,19 @@ def page(_pw_session):
                     individual.append({"name": name, "status": "PASSED", "message": ""})
                 elif " FAILED" in line_stripped:
                     name = self._extract_test_name(line_stripped)
-                    individual.append({"name": name, "status": "FAILED", "message": line_stripped})
+                    raw_detail = failure_details.get(name, line_stripped)
+                    reason = self._humanize_failure(raw_detail)
+                    individual.append({"name": name, "status": "FAILED", "message": reason})
                 elif " ERROR" in line_stripped:
                     name = self._extract_test_name(line_stripped)
-                    individual.append({"name": name, "status": "ERROR", "message": line_stripped})
+                    raw_detail = failure_details.get(name, line_stripped)
+                    reason = self._humanize_failure(raw_detail)
+                    individual.append({"name": name, "status": "ERROR", "message": reason})
                 elif " SKIPPED" in line_stripped:
                     name = self._extract_test_name(line_stripped)
                     individual.append({"name": name, "status": "SKIPPED", "message": ""})
 
             # Parse summary line: "= 5 failed, 1 passed in 101.31s ="
-            # Only match the final summary (line made of = signs with counts)
             m = re.match(r'^=+\s(.+?)\s=+$', line_stripped)
             if m:
                 summary_text = m.group(1)
@@ -343,6 +349,126 @@ def page(_pw_session):
             success=(failed == 0 and errors == 0 and total > 0),
             individual_results=unique,
         )
+
+    @staticmethod
+    def _extract_failure_details(output: str) -> dict[str, str]:
+        """Extract the failure block for each test from pytest output.
+
+        Pytest formats failures as:
+            _ TestClass.test_name _
+            ...error lines...
+            _ NextTest _   (or === summary ===)
+
+        Returns {test_name: raw_error_text}.
+        """
+        import re
+        details: dict[str, str] = {}
+        lines = output.split("\n")
+        i = 0
+        while i < len(lines):
+            # Match section headers: "_ TestClass.test_name _" or "_ test_name _"
+            m = re.match(r'^_+\s+(.+?)\s+_+$', lines[i].strip())
+            if m:
+                section_name = m.group(1)
+                # Extract the test function name (last segment after .)
+                test_name = section_name.split(".")[-1].strip()
+                # Collect lines until next section or summary
+                block_lines = []
+                i += 1
+                while i < len(lines):
+                    l = lines[i].strip()
+                    if re.match(r'^_+\s+.+\s+_+$', l) or re.match(r'^=+\s', l):
+                        break
+                    block_lines.append(lines[i])
+                    i += 1
+                details[test_name] = "\n".join(block_lines)
+            else:
+                i += 1
+        return details
+
+    @staticmethod
+    def _humanize_failure(raw: str) -> str:
+        """Convert raw pytest error output into a concise human-readable explanation."""
+        import re
+
+        # TimeoutError — element not found or not visible
+        m = re.search(r'TimeoutError.*?Timeout (\d+)ms exceeded', raw)
+        if m:
+            timeout_s = int(m.group(1)) // 1000
+            # What was it waiting for?
+            loc = re.search(r'waiting for locator\("([^"]+)"\)', raw)
+            locator_desc = loc.group(1) if loc else "an element"
+            # Why?
+            if "element is not visible" in raw:
+                return f"Timed out after {timeout_s}s — the element \"{locator_desc}\" exists in the page but is not visible (likely hidden in a menu or collapsed section)."
+            if "element is not stable" in raw:
+                return f"Timed out after {timeout_s}s — the element \"{locator_desc}\" was found but kept moving or resizing."
+            return f"Timed out after {timeout_s}s waiting for \"{locator_desc}\" to appear on the page."
+
+        # Element not visible (non-timeout)
+        if "Element is not visible" in raw:
+            loc = re.search(r'waiting for locator\("([^"]+)"\)', raw)
+            locator_desc = loc.group(1) if loc else "an element"
+            return f"The element \"{locator_desc}\" exists but is not visible — it may be hidden inside a dropdown or collapsed menu."
+
+        # AssertionError with "to_be_visible" / expected to be visible
+        if "expected to be visible" in raw.lower():
+            loc = re.search(r'waiting for locator\("([^"]+)"\)', raw)
+            locator_desc = loc.group(1) if loc else "an element"
+            return f"Expected \"{locator_desc}\" to be visible, but it was hidden."
+
+        # AssertionError — URL assertion
+        m = re.search(r"assert ['\"](.+?)['\"] (?:not )?in ['\"](.+?)['\"]", raw)
+        if m:
+            expected = m.group(1)
+            actual = m.group(2)
+            if "not in" in raw[raw.find("assert"):raw.find("assert")+100]:
+                return f"Expected the URL to NOT contain \"{expected}\", but the page stayed at \"{actual}\"."
+            return f"Expected the URL to contain \"{expected}\", but the page was at \"{actual}\"."
+
+        # AssertionError — URL with 'is contained here'
+        m = re.search(r"'(.+?)' is contained here:\s*\n\s*(\S+)", raw)
+        if m:
+            return f"Expected the URL to NOT contain \"{m.group(1)}\", but the page was at \"{m.group(2)}\"."
+
+        # AssertionError — count mismatch
+        m = re.search(r'expected to have count (\d+)', raw)
+        if m:
+            expected = m.group(1)
+            loc = re.search(r'waiting for locator\("([^"]+)"\)', raw)
+            locator_desc = loc.group(1) if loc else "elements"
+            actual_m = re.search(r'Actual value:\s*(\d+)', raw)
+            actual = actual_m.group(1) if actual_m else "a different number"
+            return f"Expected {expected} \"{locator_desc}\" element(s), but found {actual}."
+
+        # AssertionError — generic
+        m = re.search(r'AssertionError:\s*(.+)', raw)
+        if not m:
+            m = re.search(r'AssertionError:\s*(.+)', raw)
+        if m:
+            return f"Assertion failed: {m.group(1).strip()}"
+
+        # Error line (E   ...)
+        e_lines = re.findall(r'^E\s+(.+)$', raw, re.MULTILINE)
+        if e_lines:
+            # Take the most descriptive E line (skip "Call log:" etc.)
+            for eline in e_lines:
+                eline = eline.strip()
+                if eline.startswith("Call log"):
+                    continue
+                if eline.startswith("-"):
+                    continue
+                if len(eline) > 10:
+                    return eline
+            return e_lines[0].strip()
+
+        # Fallback — first non-empty line
+        for line in raw.strip().split("\n"):
+            line = line.strip()
+            if line and not line.startswith("E ") and len(line) > 5:
+                return line[:200]
+
+        return "Test failed (see raw output for details)."
 
     def cleanup(self):
         """Remove generated test files."""
