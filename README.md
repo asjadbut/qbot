@@ -109,9 +109,10 @@ Add your app URLs in **Settings → Target Application URLs**. These populate th
 
 - Sends ticket text + real page context + code diffs to the selected AI model
 - Generated tests use actual selectors from the crawled pages and understand implementation details from code changes
+- The AI's mindset is driven by the active **Team Profile** (see [Team Profiles](#team-profiles) below) so different teams can use different style rules, tech-stack hints, selector conventions and product glossaries
 - Strips AI-generated fixture redefinitions (AST-based) to avoid conflicts with conftest
 - Validates output contains `def test_` before proceeding
-- Auto-fallback: if prompt is too large, truncates code context progressively
+- Auto-fallback: if prompt is too large or the model returns no choices, truncates code context progressively (full → 1/3 → none)
 
 ### Test Execution
 
@@ -125,6 +126,187 @@ Add your app URLs in **Settings → Target Application URLs**. These populate th
 ### Replay
 
 After pipeline completes, click **▶ Replay Tests** to re-run without regenerating.
+
+---
+
+## Team Profiles
+
+Different QA teams write tests differently. Some want every edge case covered. Some, like the team this app started with, want only what the ticket explicitly requires. Some apps are ASP.NET WebForms with full postbacks; others are Vue SPAs with client-side routing. **Team Profiles** let each team capture their own QA mindset, tech-stack hints, selector conventions and product glossary, and have QBot generate tests in their style — no code changes required.
+
+### How it works
+
+The system prompt sent to the AI is composed at runtime:
+
+```
+[Immutable BASE rules]      ← protect pipeline contract (fixtures, output format,
+                              checkbox handling, count rules, navigation, etc.)
+[Active profile sections]   ← style rules, tech stack, selector conventions,
+                              glossary, extra instructions  (team-editable)
+```
+
+The BASE rules are hard-coded and cannot be removed by users — they exist to keep the AI's output compatible with the runner pipeline (the conftest, the parser, the auth contract). The team-editable sections sit on top and shape *how* the AI writes tests within those constraints.
+
+### Where profiles live
+
+`%APPDATA%\QBot\profiles.json`. The default profile is auto-seeded on first run with the original QBot prompt content split into editable sections, so existing users see no behavioural change until they edit it.
+
+### Editor UI
+
+**Settings → Team Profile → Manage Profiles…** opens the profile editor. The list on the left shows all profiles; the form on the right edits the selected one. Use **+ New** for a blank slate or **Clone** to start from an existing profile (recommended — clone the Default and tweak from there).
+
+Each profile has five editable sections:
+
+| Section | Purpose |
+|---|---|
+| **Style Rules** | Your team's QA mindset. Verbose vs minimal scope, when to write negative cases, what kinds of tests to never generate. One bullet per line. |
+| **Tech Stack & App-Specific Patterns** | Framework quirks the AI must respect. ASP.NET postback waits, Vue v-if removal, Next.js client-side nav, etc. |
+| **Selector & Interaction Conventions** | Preferred locator strategy (data-testid, role-based, legacy IDs). How custom checkboxes/dropdowns behave in your app. |
+| **Product Glossary** | Domain terms the AI should know. `term — definition`, one per line. |
+| **Extra Instructions** | Anything else: feature flags, env-specific behaviour, do/don't lists. |
+
+Switch the **Active** profile in the Settings → Team Profile card. Saving the dialog applies the new profile to the next test generation.
+
+### Building a profile from your team's history
+
+The fastest way to get a profile that matches your team's style is to derive it from real artifacts: Jira tickets your team has shipped, plus the test plans your QA wrote for them. Below are three example prompts you can paste into any chat-capable AI model (Copilot Chat, Claude, ChatGPT) along with your tickets/test plans. The model returns text you paste into the matching profile section.
+
+These examples are intentionally generic — replace the bracketed parts with your team's product names, frameworks and conventions.
+
+---
+
+#### Prompt 1 — Generate **Style Rules** from past tickets and test plans
+
+> I'm giving you several Jira tickets and the test cases our QA team wrote for those tickets. Read both carefully and infer our QA's mindset and priorities, then output a list of bullet-style rules describing how this QA writes tests. Focus on:
+>
+> - How they decide test scope (every requirement vs only obvious ones)
+> - The ratio of tests to ticket requirements they aim for
+> - What kinds of tests they explicitly avoid
+> - When they include negative / edge-case tests
+> - How they decide whether something is "in scope" for the change
+>
+> Style your output as a concise bullet list, one rule per line, with `NEVER:` prefixes for hard prohibitions. Keep it under 30 bullets. Do not invent generic best practices — only include rules that are actually visible in the QA's behaviour across these tickets.
+>
+> ### Example output style
+>
+> ```
+> - Generate ONLY tests that directly verify the requirements stated in the Jira ticket. Do NOT invent extra tests beyond the ticket scope.
+> - Count the distinct requirements in the ticket. Your test count should be CLOSE to that number (±2). If a ticket has 8 requirements, generate roughly 8-10 tests — NOT 19 or 36.
+> - Each ticket requirement = roughly ONE test. If a requirement says "add 7 new voices", write ONE test that checks all 7.
+> - Focus on FUNCTIONAL behavior: can the user perform the actions described? Do the changes work as specified?
+> - Include negative/edge case tests ONLY when they are meaningful for the specific feature.
+> - NEVER: Individual tests for each item in a list — write ONE test that checks all items.
+> - NEVER: Tests that verify standard buttons (Save, Cancel) exist.
+> - NEVER: Tests that verify table structure, column counts, header rows, or heading existence.
+> - NEVER: Tests that check element attributes (voiceid, href, class) unless the ticket specifies them.
+> - NEVER: Tests for sorting/ordering unless the ticket says items must be sorted.
+> - NEVER: "Cancel button discards changes" tests unless the ticket mentions cancel behavior.
+> - NEVER: Negative/edge case tests for behavior NOT described in the ticket.
+> ```
+>
+> ### Tickets and test plans
+>
+> ```
+> [Paste ticket 1 + its test plan]
+> [Paste ticket 2 + its test plan]
+> ...
+> ```
+
+Paste the model's output into the **Style Rules** section of your profile.
+
+---
+
+#### Prompt 2 — Generate **Selector & Interaction Conventions** from your codebase
+
+> I'm giving you snippets from our front-end codebase (templates / components / a few page sources) and a couple of existing Playwright tests. Identify our team's preferred locator strategies and interaction patterns and output them as a set of rules an AI should follow when writing new Playwright tests for this app. Cover at least:
+>
+> - Preferred locator strategy (`data-testid` vs `role` vs legacy `#id` vs class)
+> - How custom form components behave (checkboxes, dropdowns, modals) — native or custom-rolled?
+> - Wait/settle patterns we already use (`wait_for_load_state`, `wait_for_url`, fixed timeouts)
+> - Navigation patterns: do menus use `v-if` removal, CSS hide, or full re-render?
+> - Common access-restriction behaviour (redirect vs error message)
+>
+> Produce concrete `GOOD:` / `BAD:` code examples wherever a rule is non-obvious. Keep it grouped under short ALL-CAPS headers.
+>
+> ### Example output style
+>
+> ```
+> ROBUST TEST PATTERNS — follow these to avoid flaky tests:
+> - After page.goto(), always call page.wait_for_load_state("domcontentloaded") before assertions.
+> - After clicking a button that submits a form, use page.wait_for_load_state("load") or page.wait_for_url() — the page may navigate.
+> - When testing access restrictions, the app usually REDIRECTS rather than showing "Access Denied" text.
+>     GOOD: assert "/expected" in page.url
+>     BAD:  expect(page.locator("text=Access Denied")).to_be_visible()
+> - Use page.wait_for_timeout(1000) sparingly after async actions/animations.
+> - Prefer expect() with timeout for assertions that may need the page to settle:
+>     expect(page.locator(...)).to_be_visible(timeout=10000)
+>
+> CHECKBOX HANDLING — critical:
+> - is_checked(), to_be_checked(), check(), uncheck() ONLY work on native <input type="checkbox">.
+> - For custom checkbox components (divs/spans with classes like ".voice-checkbox"), use .click() to toggle and class/aria checks for state:
+>     GOOD: page.locator(".voice-checkbox").first.click()
+>     GOOD: assert "checked" in page.locator(".voice-checkbox").first.get_attribute("class")
+>     BAD:  page.locator(".voice-checkbox").first.is_checked()
+>
+> NAVIGATION MENUS & DROPDOWNS:
+> - CSS-hidden nav menus (sidebar/top nav links) — often invisible, do NOT click/hover them, just check the DOM with locator counts.
+> - Bootstrap/Vue dropdown BUTTONS (e.g. class="dropdown-toggle") — visible, click to reveal items:
+>     page.locator("button:has-text('Select an Action')").click()
+>     page.wait_for_timeout(500)
+>     expect(page.locator("a:has-text('Roster History')").first).to_be_visible()
+> - For Vue v-if conditionally rendered links, the element is removed from the DOM — use to_have_count(0) to verify absence.
+> - NEVER invent UI elements. Only reference selectors and text that appear in the provided DOM snapshots.
+> ```
+>
+> ### Codebase snippets
+>
+> ```
+> [Paste 2-5 representative templates / components]
+> [Paste 1-2 existing Playwright tests written by your team]
+> ```
+
+Paste the model's output into the **Selector & Interaction Conventions** section of your profile.
+
+---
+
+#### Prompt 3 — Generate **Tech Stack & App-Specific Patterns**
+
+> I'm giving you a description of our application's tech stack (framework, server-side patterns, anything unusual). Produce a list of framework quirks an AI must respect when writing Playwright tests for our app. For each quirk, give one or two `GOOD:` / `BAD:` code examples showing the right and wrong wait/interaction pattern. Keep it grouped under a short ALL-CAPS header.
+>
+> ### Example output style
+>
+> ```
+> ASP.NET / LEGACY WEB APP PATTERNS — this app uses ASP.NET WebForms:
+> - After clicking Save/Submit/Delete buttons (e.g. #btnSaveAuthentication), the page does a full postback. ALWAYS add page.wait_for_load_state("networkidle") THEN page.wait_for_timeout(2000) to let the server process before navigating away.
+>     GOOD: page.locator("#btnSave").click(); page.wait_for_load_state("networkidle"); page.wait_for_timeout(2000)
+>     BAD:  page.locator("#btnSave").click(); page.wait_for_load_state("load")
+> - Settings/config changes (enabling checkboxes, changing dropdowns) take effect on the SERVER after the postback completes. If you navigate to another page too early, the setting won't be active yet.
+> - When a test enables a setting, saves, and then checks the effect on another page, add sufficient wait after save before navigating.
+> ```
+>
+> ### Other examples of frameworks and the kinds of quirks I expect to see
+>
+> - **Vue 3 + `<v-if>`** — conditional elements are REMOVED from the DOM, not just hidden. Use `to_have_count(0)` to verify absence; `to_be_hidden()` will fail because the element doesn't exist.
+> - **Next.js client-side nav** — `page.goto()` triggers full SSR, but in-app `<Link>` clicks don't. After clicking a `<Link>`, use `page.wait_for_url()` instead of `wait_for_load_state("load")`.
+> - **React Server Components** — server actions complete via `fetch`, not navigation. Wait for the network response or for the resulting DOM change.
+> - **Single-Page Apps with optimistic updates** — UI changes before the server confirms. Re-fetch / reload after a save to verify persistence, don't trust the immediate UI state.
+>
+> ### Our tech stack
+>
+> ```
+> [Describe your app: framework, server-side patterns, auth model, anything unusual]
+> ```
+
+Paste the model's output into the **Tech Stack & App-Specific Patterns** section of your profile.
+
+---
+
+### Tips for tuning a profile
+
+- **Clone the Default** before editing. It contains rules forged from real test failures over many iterations — keep them as your starting baseline.
+- **One failure → one rule.** Each time a generated test fails for a reason that wasn't in your profile, add a `GOOD:` / `BAD:` example for it. The Default profile in this repo was built exactly this way.
+- **Concrete examples beat abstract rules.** `BAD: locator.is_checked() on a custom span` is far more effective than "be careful with checkboxes."
+- **Don't fight the BASE rules.** If a generated test fails because of a contract violation (fixture redefined, code fence in output, etc.), that's a bug to file — don't try to override it from a team profile.
+- **Test profiles by re-generating an old ticket.** Pick a ticket your team has already shipped and run QBot against it twice — once with Default, once with your new profile. Diff the outputs.
 
 ---
 
@@ -190,6 +372,7 @@ qbot/
   settings.py         # JSON persistence (%APPDATA%\QBot\)
   copilot_auth.py     # GitHub Copilot OAuth device flow + token management
   ai_generator.py     # AI prompt + Copilot API calls
+  profiles.py         # Team Profiles — per-team style/tech/selector/glossary
   bitbucket_client.py # Bitbucket Cloud commit/diff fetching
   page_crawler.py     # Playwright crawler, URL extraction, DOM snapshots
   test_runner.py      # pytest execution, conftest generation, result parsing
@@ -199,7 +382,8 @@ qbot/
     login_view.py     # Jira login screen
     ticket_view.py    # Ticket input, URL/model selection
     runner_view.py    # Pipeline execution, live log, results display
-    settings_dialog.py # Settings modal with Copilot auth
+    settings_dialog.py # Settings modal with Copilot auth + active profile picker
+    profiles_dialog.py # Team Profiles editor (list + form)
     styles.py         # VS Code Dark color palette, fonts
 ```
 
@@ -257,6 +441,14 @@ Settings dialog centered on screen with separate cards for GitHub Copilot (auth 
 
 Removed settings button from login screen (accessible only from ticket view). Settings refresh now only triggers on save, not on cancel/close. Input field borders changed from always-blue to subtle gray (blue only on focus). Increased Bitbucket diff limits from 2K/6K to 10K/30K per commit/total and max commits from 5 to 10, taking advantage of the Copilot API's 200K context window for better AI accuracy.
 
+### Phase 25: Team Profiles (June 9, 2026)
+
+Refactored the monolithic system prompt into composable **Team Profiles** stored in `%APPDATA%\QBot\profiles.json`. Each profile has five editable sections (style rules, tech stack, selector conventions, glossary, extra instructions) layered on top of immutable BASE rules that protect the runner pipeline contract. New "Manage Profiles…" editor dialog with new/clone/delete and per-profile editing. The original Paradym-tuned prompt becomes the auto-seeded **Default** profile so existing users see no behavioural change until they edit it.
+
+Hardened the Default profile's BASE rules by adding `GOOD:` / `BAD:` examples for every new failure mode discovered during dogfooding: substring text-match traps (`text=`, `get_by_text`, `filter(has_text=...)` all do substring matching by default), self-contained custom checkboxes that don't wrap a hidden `<input>`, post-Save URL unpredictability, fan-out per-item tests that share state, structural tests for column headers / Save buttons / table skeletons, and `to_have_count(N)` with guessed numbers. Added a final pre-flight checklist at the end of the system prompt to counter the "lost in the middle" attention dip on large prompts.
+
+Also: defensive response extraction (`_extract_openai_text` / `_extract_anthropic_text`) so empty `choices` arrays from the Copilot route raise a meaningful `RuntimeError` instead of `IndexError`; the same error message is matched by the auto-truncate retry path so context-overflow failures recover gracefully. Trimmed the model dropdown to the Claude 4.5 series (Sonnet/Opus/Haiku) — the 4.6/4.7 variants are not consistently available on the Copilot route.
+
 ---
 
 ### Key Lessons Learned
@@ -267,3 +459,6 @@ Removed settings button from login screen (accessible only from ticket view). Se
 4. **Code context from VCS matters** — Bitbucket diffs help the AI understand implementation details not visible in the DOM.
 5. **`networkidle` is unreliable** — Modern SPAs never reach network idle. Use `load` + settle delay.
 6. **API token limits vary wildly** — GitHub Models API has 8K input limit; Copilot API has 200K+. Choose the right endpoint.
+7. **One generic prompt does not fit every team** — Different products, different stacks, different QA cultures. Splitting the prompt into a fixed runner contract + a team-editable profile lets each team carry their own mindset without forking the tool.
+8. **The end of the prompt gets the most attention** — On long prompts, models suffer a "lost in the middle" attention dip. A short pre-flight checklist at the very end catches the rules they would otherwise skip.
+9. **Defensive parsing on AI responses** — Empty `choices` arrays surface as opaque `IndexError`s. Extract text through a helper that raises a meaningful error AND signals the retry path to truncate context.

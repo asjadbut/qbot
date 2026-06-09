@@ -26,6 +26,7 @@ DEFAULTS = {
     "bitbucket_api_token": "",
     "test_output_dir": "",
     "theme": "dark",
+    "active_profile": "default",
 }
 
 

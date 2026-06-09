@@ -34,6 +34,9 @@ class Config:
     # Target app base URL for testing
     target_base_url: str = ""
 
+    # Active team profile id (see qbot/profiles.py)
+    active_profile: str = "default"
+
     def load_from_disk(self):
         """Load saved settings into this config object."""
         s = load_settings()

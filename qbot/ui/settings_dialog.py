@@ -6,12 +6,12 @@ from qbot.settings import load_settings, save_settings, get_settings_path
 from qbot.config import config
 from qbot.test_runner import find_chrome
 from qbot import copilot_auth
+from qbot.profiles import load_profiles, DEFAULT_PROFILE_ID
+from qbot.ui.profiles_dialog import ProfilesDialog
 
 GITHUB_MODELS = [
-    # Claude (via Copilot API)
-    "claude-sonnet-4.6",
-    "claude-opus-4.6",
-    "claude-opus-4.7",
+    # Claude (via Copilot API) — 4.5 series only; 4.6/4.7 are not
+    # consistently available on the Copilot route
     "claude-sonnet-4.5",
     "claude-opus-4.5",
     "claude-haiku-4.5",
@@ -37,7 +37,7 @@ class SettingsDialog(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("QBot Settings")
-        self.geometry("820x620")
+        self.geometry("820x720")
         self.resizable(False, False)
         self.configure(fg_color=COLORS["bg_dark"])
         self.transient(parent)
@@ -48,8 +48,8 @@ class SettingsDialog(ctk.CTkToplevel):
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
         px = (sw - 820) // 2
-        py = (sh - 620) // 2
-        self.geometry(f"820x620+{px}+{py}")
+        py = (sh - 720) // 2
+        self.geometry(f"820x720+{px}+{py}")
 
         self.settings = load_settings()
         self.saved = False
@@ -209,15 +209,55 @@ class SettingsDialog(ctk.CTkToplevel):
         self.bb_repo = self._field(bb_card, "Repository", self.settings.get("bitbucket_repo", ""))
         self.bb_api_token = self._field(bb_card, "API Token", self.settings.get("bitbucket_api_token", ""), show="*")
 
-        # ── More Integrations Card ──
-        more_card = ctk.CTkFrame(
+        # ── Team Profile Card ──
+        profile_card = ctk.CTkFrame(
             right, fg_color=COLORS["bg_card"], corner_radius=6,
             border_color=COLORS["border"], border_width=1,
         )
-        more_card.pack(fill="x", pady=(0, 8))
+        profile_card.pack(fill="x", pady=(0, 8))
 
-        self._section(more_card, "More Integrations")
-        self._hint(more_card, "GitHub, Azure DevOps, and GitLab\nsupport coming soon.")
+        self._section(profile_card, "Team Profile")
+        self._hint(profile_card,
+            "Pick the QA mindset and product knowledge\n"
+            "used to generate tests. Each team can keep\n"
+            "their own profile with style rules,\n"
+            "tech-stack hints and a glossary.")
+
+        prof_row = ctk.CTkFrame(profile_card, fg_color="transparent")
+        prof_row.pack(fill="x", padx=12, pady=(2, 6))
+        ctk.CTkLabel(
+            prof_row, text="Active", font=FONTS["body"],
+            text_color=COLORS["text"], width=80, anchor="w",
+        ).pack(side="left")
+
+        self._profile_objs = load_profiles()
+        self._profile_name_to_id = {p.name: p.id for p in self._profile_objs}
+        active_id = self.settings.get("active_profile", DEFAULT_PROFILE_ID) or DEFAULT_PROFILE_ID
+        active_name = next(
+            (p.name for p in self._profile_objs if p.id == active_id),
+            self._profile_objs[0].name if self._profile_objs else "",
+        )
+        self.profile_var = ctk.StringVar(value=active_name)
+        self.profile_menu = ctk.CTkOptionMenu(
+            prof_row,
+            values=[p.name for p in self._profile_objs] or ["(none)"],
+            variable=self.profile_var,
+            font=FONTS["body"], fg_color=COLORS["bg_input"],
+            button_color=COLORS["accent"], button_hover_color=COLORS["accent_hover"],
+            dropdown_fg_color=COLORS["bg_card"], dropdown_hover_color=COLORS["accent"],
+            dropdown_text_color=COLORS["text"], text_color=COLORS["text"], height=32,
+        )
+        self.profile_menu.pack(side="left", fill="x", expand=True)
+        patch_dropdown_arrow(self.profile_menu)
+
+        manage_row = ctk.CTkFrame(profile_card, fg_color="transparent")
+        manage_row.pack(fill="x", padx=12, pady=(0, 12))
+        ctk.CTkButton(
+            manage_row, text="Manage Profiles…", height=30,
+            font=FONTS["small"], fg_color=COLORS["btn_neutral"],
+            hover_color=COLORS["btn_neutral_hover"], text_color=COLORS["btn_text"],
+            corner_radius=4, command=self._open_profiles,
+        ).pack(side="left")
 
         # ── BOTTOM BAR: Save / Cancel ──
         bottom = ctk.CTkFrame(self, fg_color=COLORS["bg_dark"])
@@ -282,6 +322,11 @@ class SettingsDialog(ctk.CTkToplevel):
         self.settings["bitbucket_repo"] = self.bb_repo.get().strip()
         self.settings["bitbucket_api_token"] = self.bb_api_token.get().strip()
 
+        # Active team profile (resolve display name -> id)
+        selected_name = self.profile_var.get()
+        active_id = self._profile_name_to_id.get(selected_name, DEFAULT_PROFILE_ID)
+        self.settings["active_profile"] = active_id
+
         save_settings(self.settings)
 
         # Apply theme
@@ -294,10 +339,30 @@ class SettingsDialog(ctk.CTkToplevel):
         config.bitbucket_workspace = self.settings["bitbucket_workspace"]
         config.bitbucket_repo = self.settings["bitbucket_repo"]
         config.bitbucket_api_token = self.settings["bitbucket_api_token"]
+        config.active_profile = active_id
 
         self.saved = True
         self.status_label.configure(text="\u2713 Saved!")
         self.after(1200, self.destroy)
+
+    def _open_profiles(self):
+        """Open the profile editor; refresh the dropdown when the user saves."""
+        ProfilesDialog(self, on_save=self._refresh_profiles)
+
+    def _refresh_profiles(self):
+        """Reload profiles from disk and update the dropdown after the editor closes."""
+        self._profile_objs = load_profiles()
+        self._profile_name_to_id = {p.name: p.id for p in self._profile_objs}
+        names = [p.name for p in self._profile_objs] or ["(none)"]
+        self.profile_menu.configure(values=names)
+        # Keep current selection if its name still exists, otherwise fall back
+        current = self.profile_var.get()
+        if current not in names:
+            default_name = next(
+                (p.name for p in self._profile_objs if p.id == DEFAULT_PROFILE_ID),
+                names[0],
+            )
+            self.profile_var.set(default_name)
 
     def _add_url(self):
         url = self.new_url_entry.get().strip()

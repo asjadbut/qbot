@@ -2,8 +2,12 @@ import json
 import time
 from qbot.config import config
 from qbot.copilot_auth import get_copilot_token, COPILOT_API_BASE
+from qbot.profiles import get_active_profile
 
-SYSTEM_PROMPT = """You are an expert QA automation engineer. You generate Playwright test code in Python using pytest-playwright.
+# NOTE: The legacy SYSTEM_PROMPT and MISSING_TESTS_PROMPT constants below have
+# been replaced by per-team profiles (see qbot/profiles.py). They are kept here
+# only as a reference / fallback string so old imports don't crash.
+_LEGACY_SYSTEM_PROMPT = """You are an expert QA automation engineer. You generate Playwright test code in Python using pytest-playwright.
 
 Rules:
 1. Generate ONLY valid Python code using pytest and playwright (sync API).
@@ -160,8 +164,7 @@ CRITICAL FIXTURE RULES — same as always:
 # All models are served via Copilot API (api.githubcopilot.com) using OAuth token.
 # This set is checked to route through the Copilot client.
 _COPILOT_API_MODELS = {
-    # Claude
-    'claude-sonnet-4.6', 'claude-opus-4.6', 'claude-opus-4.7',
+    # Claude — 4.5 series only; 4.6/4.7 are not consistently available on Copilot
     'claude-sonnet-4.5', 'claude-opus-4.5', 'claude-haiku-4.5',
     # GPT
     'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2', 'gpt-5.2-codex', 'gpt-5.3-codex',
@@ -231,8 +234,7 @@ class AIGenerator:
     # Reasoning models that don't support temperature
     _REASONING_MODELS = {'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2', 'gpt-5-mini'}
     # Claude models — use max_tokens
-    _CLAUDE_MODELS = {'claude-sonnet-4.6', 'claude-opus-4.6', 'claude-opus-4.7',
-                      'claude-sonnet-4.5', 'claude-opus-4.5', 'claude-haiku-4.5'}
+    _CLAUDE_MODELS = {'claude-sonnet-4.5', 'claude-opus-4.5', 'claude-haiku-4.5'}
 
     def _call_ai(self, system: str, user: str) -> str:
         last_err = None
@@ -280,7 +282,7 @@ class AIGenerator:
                 ],
                 **token_kwarg,
             )
-            return response.choices[0].message.content.strip()
+            return self._extract_openai_text(response, model)
 
         elif config.ai_provider == "groq":
             client = self._get_groq()
@@ -293,7 +295,7 @@ class AIGenerator:
                 temperature=0.2,
                 max_tokens=8000,
             )
-            return response.choices[0].message.content.strip()
+            return self._extract_openai_text(response, config.groq_model)
 
         elif config.ai_provider == "openai":
             client = self._get_openai()
@@ -306,7 +308,7 @@ class AIGenerator:
                 temperature=0.2,
                 max_tokens=8000,
             )
-            return response.choices[0].message.content.strip()
+            return self._extract_openai_text(response, config.openai_model)
 
         elif config.ai_provider == "anthropic":
             client = self._get_anthropic()
@@ -317,10 +319,58 @@ class AIGenerator:
                 temperature=0.2,
                 max_tokens=8000,
             )
-            return response.content[0].text.strip()
+            return self._extract_anthropic_text(response, config.anthropic_model)
 
         else:
             raise ValueError(f"Unknown AI provider: {config.ai_provider}")
+
+    @staticmethod
+    def _extract_openai_text(response, model: str) -> str:
+        """Pull text out of an OpenAI-style chat completion response defensively.
+
+        The Copilot API (and occasionally upstream providers) can return an
+        empty `choices` array when the model is filtered, truncated, or errors
+        out server-side. Indexing blindly raises 'list index out of range'
+        which gives the user no useful information.
+        """
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            # Try to surface anything useful the API may have returned
+            err = getattr(response, "error", None)
+            detail = f" error={err}" if err else ""
+            raise RuntimeError(
+                f"Model '{model}' returned no choices.{detail} "
+                f"This usually means a content filter, an upstream error, or a context-size overflow. "
+                f"Try a smaller ticket/page context or switch model (e.g. claude-sonnet-4.6, gpt-4.1)."
+            )
+        msg = getattr(choices[0], "message", None)
+        content = getattr(msg, "content", None) if msg is not None else None
+        if not content:
+            finish = getattr(choices[0], "finish_reason", None) or "unknown"
+            raise RuntimeError(
+                f"Model '{model}' returned empty content (finish_reason={finish}). "
+                f"The model likely hit its output token limit or was filtered. "
+                f"Try a different model with higher limits."
+            )
+        return content.strip()
+
+    @staticmethod
+    def _extract_anthropic_text(response, model: str) -> str:
+        """Pull text out of an Anthropic messages response defensively."""
+        blocks = getattr(response, "content", None) or []
+        if not blocks:
+            stop = getattr(response, "stop_reason", None) or "unknown"
+            raise RuntimeError(
+                f"Model '{model}' returned no content blocks (stop_reason={stop}). "
+                f"Try a different model or reduce the prompt size."
+            )
+        text = getattr(blocks[0], "text", None)
+        if not text:
+            raise RuntimeError(
+                f"Model '{model}' returned an empty text block. "
+                f"Try a different model or reduce the prompt size."
+            )
+        return text.strip()
 
     def generate_tests(self, ticket_text: str, base_url: str = "", page_context: str = "", code_context: str = "") -> str:
         """Generate Playwright test code from Jira ticket details + real page DOM + code changes."""
@@ -360,29 +410,43 @@ Use ONLY selectors that appear in the DOM snapshots above. Do NOT guess or hallu
 Cover all requirements, acceptance criteria, and reasonable edge cases."""
 
         # Try with code context first, then truncate/drop if too large
+        system_prompt = get_active_profile().render_system_prompt()
         user_prompt = _build_prompt(code_context)
+
+        # Errors that suggest the prompt was too big or the model returned nothing.
+        # Includes the messages raised by our defensive extractors when the API
+        # gives back an empty choices/content list (common on Copilot + Claude
+        # when input + max_tokens exceeds the route's allowance).
+        _too_big_markers = (
+            "413", "too large", "tokens_limit",
+            "no choices", "empty content", "no content blocks",
+        )
+
+        def _looks_too_big(exc: Exception) -> bool:
+            s = str(exc).lower()
+            return any(m in s for m in _too_big_markers)
+
         try:
-            code = self._call_ai(SYSTEM_PROMPT, user_prompt)
+            code = self._call_ai(system_prompt, user_prompt)
         except Exception as e:
-            err_str = str(e).lower()
-            if "413" in err_str or "too large" in err_str or "tokens_limit" in err_str:
-                # Retry with truncated code context (half)
+            if _looks_too_big(e):
+                # Retry with truncated code context (third)
                 if code_context and len(code_context) > 500:
-                    half = code_context[:len(code_context) // 3]
-                    user_prompt = _build_prompt(half)
+                    third = code_context[:len(code_context) // 3]
+                    user_prompt = _build_prompt(third)
                     try:
-                        code = self._call_ai(SYSTEM_PROMPT, user_prompt)
+                        code = self._call_ai(system_prompt, user_prompt)
                     except Exception as e2:
-                        if "413" in str(e2).lower() or "too large" in str(e2).lower():
+                        if _looks_too_big(e2):
                             # Drop code context entirely
                             user_prompt = _build_prompt("")
-                            code = self._call_ai(SYSTEM_PROMPT, user_prompt)
+                            code = self._call_ai(system_prompt, user_prompt)
                         else:
                             raise
                 else:
                     # No code context to drop — retry without it
                     user_prompt = _build_prompt("")
-                    code = self._call_ai(SYSTEM_PROMPT, user_prompt)
+                    code = self._call_ai(system_prompt, user_prompt)
             else:
                 raise
 
@@ -445,7 +509,7 @@ Target application base URL: {base_url or 'http://localhost:3000'}
 Generate ONLY the additional test functions needed to cover the missing scenarios.
 Include necessary imports at the top if new ones are needed."""
 
-        code = self._call_ai(MISSING_TESTS_PROMPT, user_prompt)
+        code = self._call_ai(get_active_profile().render_missing_tests_prompt(), user_prompt)
         code = self._strip_code_fences(code)
         return code
 
