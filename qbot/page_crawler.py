@@ -35,6 +35,8 @@ class PageSnapshot:
     inputs: list[dict] = field(default_factory=list)      # [{name, type, id, placeholder, selector}]
     forms: list[dict] = field(default_factory=list)       # [{action, method, id}]
     dropdowns: list[dict] = field(default_factory=list)   # [{id, name, options:[]}]
+    menus: list[dict] = field(default_factory=list)       # [{toggle, items:[{text, selector}]}] — revealed by clicking dropdown toggles
+    aria: str = ""                                         # accessibility tree snapshot (roles + names)
     visible_text: str = ""
 
     def to_dict(self) -> dict:
@@ -47,8 +49,19 @@ class PageSnapshot:
             "inputs": self.inputs[:30],
             "forms": self.forms[:10],
             "dropdowns": self.dropdowns[:15],
+            "menus": self.menus[:10],
             "visible_text_snippet": self.visible_text[:2000],
         }
+
+    def to_cache_dict(self) -> dict:
+        """Full serialization for the crawl cache (lossless)."""
+        from dataclasses import asdict
+        return asdict(self)
+
+    @classmethod
+    def from_cache_dict(cls, d: dict) -> "PageSnapshot":
+        known = {f.name for f in cls.__dataclass_fields__.values()}
+        return cls(**{k: v for k, v in d.items() if k in known})
 
 
 def _clean_url(url: str) -> str:
@@ -126,10 +139,11 @@ def _capture_snapshot(page: Page) -> PageSnapshot:
     # Buttons
     snapshot.buttons = page.eval_on_selector_all(
         "button, input[type='submit'], input[type='button'], a.btn, [role='button']",
-        """els => els.slice(0, 30).map(e => {
+        """els => els.slice(0, 40).map(e => {
             let text = e.textContent?.trim() || e.value || e.getAttribute('aria-label') || '';
             let sel = '';
             if (e.id) sel = '#' + e.id;
+            else if (e.getAttribute('data-testid')) sel = '[data-testid=\"' + e.getAttribute('data-testid') + '\"]';
             else if (e.name) sel = '[name=\"' + e.name + '\"]';
             else if (text) sel = 'text=' + text.substring(0, 40);
             return {text: text.substring(0, 60), selector: sel};
@@ -139,9 +153,10 @@ def _capture_snapshot(page: Page) -> PageSnapshot:
     # Inputs
     snapshot.inputs = page.eval_on_selector_all(
         "input, textarea, select",
-        """els => els.slice(0, 40).map(e => {
+        """els => els.slice(0, 50).map(e => {
             let sel = '';
             if (e.id) sel = '#' + e.id;
+            else if (e.getAttribute('data-testid')) sel = '[data-testid=\"' + e.getAttribute('data-testid') + '\"]';
             else if (e.name) sel = '[name=\"' + e.name + '\"]';
             else sel = e.tagName.toLowerCase() + '[type=\"' + (e.type || 'text') + '\"]';
             return {
@@ -180,10 +195,81 @@ def _capture_snapshot(page: Page) -> PageSnapshot:
     # Visible text (trimmed)
     snapshot.visible_text = page.eval_on_selector(
         "body",
-        "el => el.innerText.substring(0, 1500)"
+        "el => el.innerText.substring(0, 2000)"
     )
 
+    # ARIA accessibility snapshot — compact role/name tree, very LLM-friendly
+    # (Playwright >= 1.49; degrade silently on older versions)
+    try:
+        snapshot.aria = page.locator("body").aria_snapshot()[:3500]
+    except Exception:
+        snapshot.aria = ""
+
+    # Expand dropdown menus — reveals items that are invisible until the
+    # toggle is clicked, so the AI knows the correct interaction pattern
+    snapshot.menus = _expand_dropdown_menus(page)
+
     return snapshot
+
+
+_DROPDOWN_TOGGLE_SELECTOR = (
+    ".dropdown-toggle, [data-toggle='dropdown'], [data-bs-toggle='dropdown'], "
+    "button[aria-haspopup='true'], button[aria-haspopup='menu']"
+)
+
+
+def _expand_dropdown_menus(page: Page, max_menus: int = 5) -> list[dict]:
+    """Click visible dropdown toggles one at a time and capture the menu items
+    they reveal. Closes each menu (Escape) before moving on. Best-effort —
+    any failure just skips that toggle."""
+    menus: list[dict] = []
+    try:
+        toggles = page.locator(_DROPDOWN_TOGGLE_SELECTOR)
+        count = min(toggles.count(), 10)
+    except Exception:
+        return menus
+
+    for i in range(count):
+        if len(menus) >= max_menus:
+            break
+        toggle = toggles.nth(i)
+        try:
+            if not toggle.is_visible():
+                continue
+            label = (toggle.text_content() or toggle.get_attribute("aria-label") or "").strip()[:60]
+
+            before = page.eval_on_selector_all(
+                "a, button, [role='menuitem']",
+                "els => els.filter(e => e.offsetParent !== null).length")
+            toggle.click(timeout=2000)
+            page.wait_for_timeout(400)
+
+            # Items that became visible after the click
+            items = page.eval_on_selector_all(
+                ".dropdown-menu a, .dropdown-menu button, [role='menu'] [role='menuitem'], .dropdown-menu [role='menuitem']",
+                """els => els.filter(e => e.offsetParent !== null).slice(0, 15).map(e => ({
+                    text: (e.textContent || '').trim().substring(0, 60),
+                    href: e.getAttribute('href') || ''
+                })).filter(x => x.text.length > 0)"""
+            )
+            after = page.eval_on_selector_all(
+                "a, button, [role='menuitem']",
+                "els => els.filter(e => e.offsetParent !== null).length")
+
+            if items and after > before:
+                menus.append({"toggle": label or f"dropdown #{i + 1}", "items": items})
+
+            # Close the menu before the next toggle
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(200)
+        except Exception:
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+            continue
+
+    return menus
 
 
 class PageCrawler:
@@ -339,9 +425,23 @@ class PageCrawler:
                     opts = [f"{o['text']}" for o in dd.get("options", [])[:10]]
                     parts.append(f"Dropdown ({dd['name'] or dd['id']}): [{', '.join(opts)}]")
 
+            if snap.menus:
+                for menu in snap.menus[:8]:
+                    item_lines = [
+                        f"    - \"{it['text']}\"" + (f" → {it['href']}" if it.get("href") and it["href"] != "#" else "")
+                        for it in menu.get("items", [])[:12]
+                    ]
+                    parts.append(
+                        f"Dropdown menu \"{menu['toggle']}\" (items hidden until the toggle button is CLICKED):\n"
+                        + "\n".join(item_lines)
+                    )
+
             if snap.forms:
                 form_lines = [f"  - action={f['action']} method={f['method']}" for f in snap.forms]
                 parts.append("Forms:\n" + "\n".join(form_lines))
+
+            if snap.aria:
+                parts.append(f"Accessibility tree (role/name — prefer get_by_role() locators from this):\n{snap.aria}")
 
             if snap.visible_text:
                 parts.append(f"Visible text (excerpt):\n{snap.visible_text[:1500]}")

@@ -236,6 +236,93 @@ class AIGenerator:
     # Claude models — use max_tokens
     _CLAUDE_MODELS = {'claude-sonnet-4.5', 'claude-opus-4.5', 'claude-haiku-4.5'}
 
+    # Approximate input token budgets per model (conservative — leaves room for output)
+    _INPUT_BUDGETS = {
+        'gpt-4o': 48_000, 'gpt-4o-mini': 48_000, 'gpt-4.1': 48_000,
+        'gemini-2.5-pro': 90_000,
+    }
+    _DEFAULT_INPUT_BUDGET = 90_000
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """Rough token estimate (~4 chars/token for English + code)."""
+        return len(text) // 4 + 1
+
+    def _input_budget(self) -> int:
+        model = config.github_model if config.ai_provider == "github" else ""
+        return self._INPUT_BUDGETS.get(model, self._DEFAULT_INPUT_BUDGET)
+
+    @staticmethod
+    def _trim_code_context(code_context: str, max_chars: int) -> str:
+        """Trim code context by dropping whole commit-diff sections from the end
+        (instead of slicing mid-hunk, which corrupts the diff)."""
+        if len(code_context) <= max_chars:
+            return code_context
+        import re as _re
+        sections = _re.split(r'(?=^--- Commit )', code_context, flags=_re.MULTILINE)
+        kept = []
+        size = 0
+        for section in sections:
+            if size + len(section) > max_chars:
+                break
+            kept.append(section)
+            size += len(section)
+        trimmed = "".join(kept)
+        # If even the header + first section is too big, hard-truncate at a hunk boundary
+        if not trimmed or len(trimmed) > max_chars:
+            trimmed = code_context[:max_chars]
+            cut = trimmed.rfind("\n@@")
+            if cut > max_chars // 2:
+                trimmed = trimmed[:cut]
+        return trimmed + "\n\n[... remaining diffs trimmed to fit model context ...]"
+
+    def _fit_to_budget(self, system: str, ticket_text: str, page_context: str,
+                       code_context: str, on_log=None) -> tuple[str, str]:
+        """Pre-emptively trim contexts so the prompt fits the model's input budget.
+        Avoids a wasted round-trip on a 413/empty-response error.
+        Priority: ticket > page DOM > code diffs."""
+        log = on_log or (lambda msg: None)
+        budget = self._input_budget()
+        scaffold = 1500  # prompt template + headroom, in tokens
+        fixed = self._estimate_tokens(system) + self._estimate_tokens(ticket_text) + scaffold
+
+        page_tok = self._estimate_tokens(page_context)
+        code_tok = self._estimate_tokens(code_context)
+
+        if fixed + page_tok + code_tok <= budget:
+            return page_context, code_context
+
+        # 1. Trim code context to whatever room remains after page context
+        room_for_code = max(0, budget - fixed - page_tok)
+        if code_context and code_tok > room_for_code:
+            if room_for_code < 500:  # not worth keeping a fragment
+                log(f"   Context budget: dropping code context ({code_tok:,} tokens over budget)")
+                code_context = ""
+            else:
+                code_context = self._trim_code_context(code_context, room_for_code * 4)
+                log(f"   Context budget: code context trimmed {code_tok:,} -> "
+                    f"{self._estimate_tokens(code_context):,} tokens")
+            code_tok = self._estimate_tokens(code_context)
+
+        # 2. If still over, trim page context (drop trailing snapshot sections)
+        if fixed + page_tok + code_tok > budget and page_context:
+            room_for_page = max(2000, budget - fixed - code_tok)
+            sections = page_context.split("\n\n---\n\n")
+            kept, size = [], 0
+            for s in sections:
+                if size + self._estimate_tokens(s) > room_for_page:
+                    break
+                kept.append(s)
+                size += self._estimate_tokens(s)
+            if kept:
+                page_context = "\n\n---\n\n".join(kept)
+            else:
+                page_context = page_context[:room_for_page * 4]
+            log(f"   Context budget: page context trimmed {page_tok:,} -> "
+                f"{self._estimate_tokens(page_context):,} tokens")
+
+        return page_context, code_context
+
     def _call_ai(self, system: str, user: str) -> str:
         last_err = None
         for attempt in range(3):
@@ -372,7 +459,7 @@ class AIGenerator:
             )
         return text.strip()
 
-    def generate_tests(self, ticket_text: str, base_url: str = "", page_context: str = "", code_context: str = "") -> str:
+    def generate_tests(self, ticket_text: str, base_url: str = "", page_context: str = "", code_context: str = "", on_log=None) -> str:
         """Generate Playwright test code from Jira ticket details + real page DOM + code changes."""
 
         def _build_prompt(code_ctx: str = "") -> str:
@@ -411,6 +498,12 @@ Cover all requirements, acceptance criteria, and reasonable edge cases."""
 
         # Try with code context first, then truncate/drop if too large
         system_prompt = get_active_profile().render_system_prompt()
+
+        # Pre-emptively fit contexts to the model's input budget (saves a
+        # wasted round-trip on an oversized prompt)
+        page_context, code_context = self._fit_to_budget(
+            system_prompt, ticket_text, page_context, code_context, on_log
+        )
         user_prompt = _build_prompt(code_context)
 
         # Errors that suggest the prompt was too big or the model returned nothing.
@@ -460,6 +553,117 @@ Cover all requirements, acceptance criteria, and reasonable edge cases."""
                 f"Try a model with higher limits like gpt-4o or gpt-4.1."
             )
 
+        # Validate syntax — a truncated completion produces a broken file that
+        # only fails later at pytest collection. Retry once asking for a
+        # more concise file.
+        code = self._ensure_valid_syntax(code, system_prompt, user_prompt)
+
+        return code
+
+    def _ensure_valid_syntax(self, code: str, system_prompt: str, user_prompt: str) -> str:
+        """Verify generated code parses; retry once with a 'be concise' nudge if not."""
+        import ast
+        try:
+            ast.parse(code)
+            return code
+        except SyntaxError as e:
+            retry_prompt = user_prompt + (
+                "\n\nIMPORTANT: Your previous output was INVALID Python "
+                f"(SyntaxError line {e.lineno}: {e.msg}) — most likely truncated by the output "
+                "token limit. Generate FEWER and MORE CONCISE tests so the COMPLETE file fits. "
+                "Prioritize the most important ticket requirements."
+            )
+            code = self._strip_code_fences(self._call_ai(system_prompt, retry_prompt))
+            try:
+                ast.parse(code)
+            except SyntaxError as e2:
+                raise RuntimeError(
+                    f"AI produced syntactically invalid Python twice (line {e2.lineno}: {e2.msg}). "
+                    f"The model is likely hitting its output limit — try gpt-4o or gpt-4.1."
+                )
+            if 'def test_' not in code:
+                raise RuntimeError("AI retry produced no test functions.")
+            return code
+
+    def fix_lint_issues(self, test_code: str, issues_text: str, page_context: str = "") -> str:
+        """One targeted call: fix linter-flagged problems in the generated tests.
+        Returns the complete corrected test file."""
+        context_block = ""
+        if page_context:
+            context_block = f"""
+## REAL PAGE DOM SNAPSHOTS (source of truth for selectors and text)
+{page_context}
+"""
+        user_prompt = f"""The following generated Playwright test file has problems flagged by a static linter.
+
+## Test File
+```python
+{test_code}
+```
+
+## Linter Issues
+{issues_text}
+{context_block}
+Fix EVERY issue:
+- [ERROR] issues are definitely wrong — rewrite those lines using the suggested pattern.
+- [WARNING] issues flag selectors/text NOT found in the DOM snapshots — cross-check each one
+  against the snapshots above. If the element genuinely exists under different wording/selector,
+  use the version from the snapshots. If it does not exist at all, rewrite the assertion to use
+  an element that DOES exist, or remove that specific check.
+- Do NOT change tests or lines that have no issues.
+- Return the COMPLETE corrected test file (all tests, all imports).
+Output ONLY valid Python code, no markdown."""
+
+        code = self._call_ai(get_active_profile().render_system_prompt(), user_prompt)
+        code = self._strip_code_fences(code)
+        if 'def test_' not in code:
+            raise RuntimeError("Lint-fix call returned no test functions.")
+        import ast
+        ast.parse(code)  # raises SyntaxError — caller keeps the original code
+        return code
+
+    def repair_tests(self, ticket_text: str, test_code: str, failures: list, page_context: str = "") -> str:
+        """Self-healing: fix ONLY the failing tests using their real error output.
+        Returns the complete corrected test file."""
+        failure_blocks = []
+        for f in failures:
+            detail = (f.get("detail") or f.get("message") or "")[:1500]
+            failure_blocks.append(f"### {f['name']}\n{detail}")
+        failures_text = "\n\n".join(failure_blocks)
+
+        context_block = ""
+        if page_context:
+            context_block = f"""
+## REAL PAGE DOM SNAPSHOTS (source of truth — only use selectors/text that appear here)
+{page_context}
+"""
+        user_prompt = f"""These Playwright tests were generated for the Jira ticket below. Some tests FAILED when executed against the real application. Fix them using the actual error output.
+
+## Jira Ticket
+{ticket_text}
+
+## Current Test File
+```python
+{test_code}
+```
+
+## Failing Tests — actual pytest errors
+{failures_text}
+{context_block}
+Instructions:
+1. Fix ONLY the failing tests. Keep passing tests EXACTLY as they are — do not rename, reorder, or reword them.
+2. Diagnose each failure from its error: wrong selector, substring-match collision, timing/postback issue, hidden element, redirect after save, etc.
+3. Use ONLY selectors and text visible in the DOM snapshots. Do NOT invent new selectors.
+4. If a failing test asserts something the DOM snapshots prove cannot be verified (element genuinely absent), DELETE that test rather than leaving a failing assertion.
+5. Return the COMPLETE corrected test file (all imports, all tests).
+Output ONLY valid Python code, no markdown."""
+
+        code = self._call_ai(get_active_profile().render_system_prompt(), user_prompt)
+        code = self._strip_code_fences(code)
+        if 'def test_' not in code:
+            raise RuntimeError("Repair call returned no test functions.")
+        import ast
+        ast.parse(code)  # raises SyntaxError — caller keeps the original code
         return code
 
     def review_coverage(self, ticket_text: str, test_code: str, test_results: str) -> dict:

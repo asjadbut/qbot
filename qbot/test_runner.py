@@ -1,4 +1,5 @@
 import os
+import sys
 import subprocess
 import shutil
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ class TestRunner:
         self.test_dir = config.test_output_dir
         os.makedirs(self.test_dir, exist_ok=True)
         self.chrome_path: str | None = None  # set after first conftest write
+        self._reruns_available: bool | None = None  # lazily probed
 
     @staticmethod
     def _strip_fixture_redefinitions(code: str) -> str:
@@ -114,16 +116,53 @@ class TestRunner:
             f.write(code)
         return filepath
 
+    @staticmethod
+    def _python_command() -> str:
+        """Resolve the Python interpreter to run pytest with.
+
+        sys.executable is correct when running from source. In a PyInstaller
+        frozen exe, sys.executable is QBot.exe — fall back to python on PATH.
+        """
+        if getattr(sys, "frozen", False):
+            return shutil.which("python") or shutil.which("py") or "python"
+        return sys.executable
+
+    def _supports_reruns(self) -> bool:
+        """Check (once) whether pytest-rerunfailures is installed in the
+        interpreter that will run the tests."""
+        if self._reruns_available is None:
+            try:
+                probe = subprocess.run(
+                    [self._python_command(), "-c", "import pytest_rerunfailures"],
+                    capture_output=True, timeout=20,
+                )
+                self._reruns_available = probe.returncode == 0
+            except Exception:
+                self._reruns_available = False
+        return self._reruns_available
+
     def run_tests(self, filepath: str = None) -> TestResult:
         """Execute tests using pytest and return results."""
+        junit_path = os.path.join(self.test_dir, ".qbot_results.xml")
+        if os.path.exists(junit_path):
+            try:
+                os.remove(junit_path)
+            except OSError:
+                pass
+
         cmd = [
-            "python", "-m", "pytest",
+            self._python_command(), "-m", "pytest",
             filepath or self.test_dir,
             "-v",
             "--tb=short",
             "--no-header",
+            f"--junitxml={junit_path}",
             "-p", "no:playwright",  # disable pytest-playwright — we manage the browser ourselves
         ]
+        # Retry failures once — separates flaky timing failures from real bugs,
+        # so the AI repair loop only sees genuine failures.
+        if self._supports_reruns():
+            cmd += ["--reruns", "1", "--reruns-delay", "2"]
 
         try:
             result = subprocess.run(
@@ -135,6 +174,10 @@ class TestRunner:
                 env={**os.environ, "PYTHONPATH": self.test_dir},
             )
             output = result.stdout + "\n" + result.stderr
+            # Prefer structured JUnit XML results; fall back to regex parsing
+            parsed = self._parse_junit_xml(junit_path, output)
+            if parsed is not None:
+                return parsed
             return self._parse_results(output)
         except subprocess.TimeoutExpired:
             return TestResult(
@@ -152,6 +195,67 @@ class TestRunner:
     def run_all_tests(self) -> TestResult:
         """Run all test files in the test directory."""
         return self.run_tests(self.test_dir)
+
+    def _parse_junit_xml(self, xml_path: str, output: str) -> TestResult | None:
+        """Parse pytest's JUnit XML report — structured and reliable.
+
+        Returns None if the XML is missing/unreadable so the caller can fall
+        back to regex parsing of the console output.
+        """
+        import xml.etree.ElementTree as ET
+
+        if not os.path.isfile(xml_path):
+            return None
+        try:
+            root = ET.parse(xml_path).getroot()
+        except ET.ParseError:
+            return None
+
+        passed = failed = errors = skipped = 0
+        individual = []
+
+        for case in root.iter("testcase"):
+            name = case.get("name", "unknown")
+            failure = case.find("failure")
+            error = case.find("error")
+            skip = case.find("skipped")
+
+            if failure is not None:
+                failed += 1
+                raw = (failure.get("message") or "") + "\n" + (failure.text or "")
+                individual.append({
+                    "name": name, "status": "FAILED",
+                    "message": self._humanize_failure(raw),
+                    "detail": raw.strip(),
+                })
+            elif error is not None:
+                errors += 1
+                raw = (error.get("message") or "") + "\n" + (error.text or "")
+                individual.append({
+                    "name": name, "status": "ERROR",
+                    "message": self._humanize_failure(raw),
+                    "detail": raw.strip(),
+                })
+            elif skip is not None:
+                skipped += 1
+                individual.append({
+                    "name": name, "status": "SKIPPED",
+                    "message": skip.get("message", ""), "detail": "",
+                })
+            else:
+                passed += 1
+                individual.append({"name": name, "status": "PASSED", "message": "", "detail": ""})
+
+        total = passed + failed + errors + skipped
+        if total == 0:
+            return None  # collection error etc. — let regex parser surface it
+
+        return TestResult(
+            passed=passed, failed=failed, errors=errors, skipped=skipped,
+            total=total, output=output,
+            success=(failed == 0 and errors == 0 and total > 0),
+            individual_results=individual,
+        )
 
     def _ensure_conftest(self):
         """Create conftest.py that manages ONE browser, ONE context, shared across all tests."""

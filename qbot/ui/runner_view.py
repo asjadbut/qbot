@@ -4,9 +4,15 @@ from qbot.ui.styles import COLORS, FONTS
 from qbot.ai_generator import AIGenerator
 from qbot.test_runner import TestRunner, TestResult
 from qbot.page_crawler import PageCrawler
+from qbot.test_linter import lint_test_code, format_issues
 from qbot.bitbucket_client import BitbucketClient, format_code_context
+from qbot import context_cache
 from qbot.jira_client import TicketDetails
 from qbot.config import config
+
+# Max self-healing rounds: failed tests + their errors are sent back to the AI
+# for a fix, then re-executed. Bounded to avoid infinite loops / token burn.
+MAX_REPAIR_ROUNDS = 2
 
 
 class RunnerView(ctk.CTkFrame):
@@ -98,7 +104,8 @@ class RunnerView(ctk.CTkFrame):
             ("crawl",    "1. Crawl Pages (login)"),
             ("generate", "2. AI Generates Tests"),
             ("execute",  "3. Playwright Executes"),
-            ("report",   "4. Final Report"),
+            ("repair",   "4. AI Repairs Failures"),
+            ("report",   "5. Final Report"),
         ]
         for key, label in step_defs:
             row = ctk.CTkFrame(left, fg_color="transparent")
@@ -243,6 +250,10 @@ class RunnerView(ctk.CTkFrame):
             if self._cancelled.is_set():
                 self._mark_cancelled(after="execute")
                 return
+            self._step_repair()
+            if self._cancelled.is_set():
+                self._mark_cancelled(after="repair")
+                return
             self._step_report()
         except Exception as e:
             err_msg = str(e)
@@ -261,7 +272,7 @@ class RunnerView(ctk.CTkFrame):
                 self.cancel_btn._text_label.configure(fg="#ffffff")
 
     def _mark_cancelled(self, after: str):
-        order = ["crawl", "generate", "execute", "report"]
+        order = ["crawl", "generate", "execute", "repair", "report"]
         idx = order.index(after)
         for key in order[idx + 1:]:
             self.after(0, lambda k=key: self._set_step(k, "cancelled"))
@@ -270,6 +281,31 @@ class RunnerView(ctk.CTkFrame):
     # -- Step 1: Crawl pages ------------------------------------------
     def _step_crawl(self):
         self.after(0, lambda: self._set_step("crawl", "running"))
+
+        # Fresh cached context for this ticket? Skip the crawl entirely.
+        cached = context_cache.load_context(self.ticket.key, config.target_base_url or "")
+        if cached:
+            snapshots, code_context, age = cached
+            self.crawler.snapshots = snapshots
+            self.page_context = self.crawler.get_snapshots_text()
+            self.code_context = code_context
+            mins = int(age // 60)
+            self.after(0, lambda: self._log(
+                f"Step 1: Using cached crawl from {mins} min ago — "
+                f"{len(snapshots)} page(s), {len(code_context):,} chars of code context.\n"
+                f"   (Cache expires after 60 min; it is reused only while auth_state.json exists.)"
+            ))
+            self.after(0, lambda: self._set_step("crawl", "done"))
+
+            def _show_cached():
+                self.context_text.delete("1.0", "end")
+                ctx = self.page_context or "(No pages captured)"
+                if self.code_context:
+                    ctx += f"\n\n{'=' * 60}\n\n{self.code_context}"
+                self.context_text.insert("1.0", ctx)
+            self.after(0, _show_cached)
+            return
+
         self.after(0, lambda: self._log(
             "Step 1: Crawling target pages...\n"
             "   Chrome will open. If you see a login page, please log in.\n"
@@ -299,6 +335,12 @@ class RunnerView(ctk.CTkFrame):
                     err_msg = str(e)
                     self.after(0, lambda msg=err_msg: self._log(f"   Bitbucket fetch failed: {msg} (continuing without code context)"))
                     self.code_context = ""
+
+            # Cache crawl + code context for fast re-runs of this ticket
+            context_cache.save_context(
+                self.ticket.key, config.target_base_url or "",
+                self.crawler.snapshots, self.code_context,
+            )
 
             self.after(0, lambda: self._set_step("crawl", "done"))
 
@@ -333,7 +375,37 @@ class RunnerView(ctk.CTkFrame):
                 config.target_base_url,
                 page_context=self.page_context,
                 code_context=self.code_context,
+                on_log=self._log_threadsafe,
             )
+
+            # Lint against the real DOM snapshots; fix flagged issues in one
+            # targeted AI call before ever executing.
+            issues = lint_test_code(self.generated_code, self.crawler.snapshots)
+            if issues:
+                issues_text = format_issues(issues)
+                n_err = sum(1 for i in issues if i.severity == "error")
+                n_warn = len(issues) - n_err
+                self.after(0, lambda: self._log(
+                    f"   Linter: {n_err} error(s), {n_warn} warning(s) in generated code:"))
+                for issue in issues[:15]:
+                    line = str(issue)
+                    self.after(0, lambda l=line: self._log(f"      {l}"))
+                self.after(0, lambda: self._log("   Asking AI to fix flagged issues..."))
+                try:
+                    self.generated_code = self.ai.fix_lint_issues(
+                        self.generated_code, issues_text, self.page_context)
+                    remaining = lint_test_code(self.generated_code, self.crawler.snapshots)
+                    n_rem_err = sum(1 for i in remaining if i.severity == "error")
+                    self.after(0, lambda: self._log(
+                        f"   Lint fix applied ({n_rem_err} error(s) remaining "
+                        f"of {len(remaining)} issue(s))."))
+                except Exception as fix_err:
+                    msg = str(fix_err)
+                    self.after(0, lambda m=msg: self._log(
+                        f"   Lint fix failed ({m}) — continuing with original code."))
+            else:
+                self.after(0, lambda: self._log("   Linter: no issues found."))
+
             filepath = self.runner.write_test_file(self.generated_code)
 
             if self.runner.chrome_path:
@@ -378,6 +450,70 @@ class RunnerView(ctk.CTkFrame):
         self.after(0, lambda: self._set_step("execute", "done" if result.success else "error"))
 
         self.after(0, lambda: self._show_results(result))
+
+    # -- Step 4: Self-healing repair loop ------------------------------
+    def _step_repair(self):
+        result = self.exec_result
+        if not result or result.success or not result.individual_results:
+            self.after(0, lambda: self._set_step("repair", "done"))
+            if result and result.success:
+                self.after(0, lambda: self._log("\nStep 4: All tests passed — no repair needed."))
+            return
+
+        self.after(0, lambda: self._set_step("repair", "running"))
+
+        for round_no in range(1, MAX_REPAIR_ROUNDS + 1):
+            if self._cancelled.is_set():
+                return
+
+            failures = [t for t in result.individual_results
+                        if t["status"] in ("FAILED", "ERROR")]
+            if not failures:
+                break
+
+            self.after(0, lambda r=round_no, n=len(failures): self._log(
+                f"\nStep 4: Repair round {r}/{MAX_REPAIR_ROUNDS} — "
+                f"sending {n} failing test(s) + errors back to the AI..."))
+
+            try:
+                fixed_code = self.ai.repair_tests(
+                    self.ticket_text, self.generated_code, failures, self.page_context)
+            except Exception as e:
+                msg = str(e)
+                self.after(0, lambda m=msg: self._log(f"   Repair failed: {m} — keeping last results."))
+                break
+
+            self.generated_code = fixed_code
+            self.runner.write_test_file(fixed_code)
+
+            def _show_code():
+                self.code_text.delete("1.0", "end")
+                self.code_text.insert("1.0", self.generated_code)
+            self.after(0, _show_code)
+
+            if self._cancelled.is_set():
+                return
+
+            self.after(0, lambda: self._log("   Re-running repaired tests..."))
+            result = self.runner.run_tests()
+            self.exec_result = result
+
+            self.after(0, lambda: self._update_stats(result))
+            icon = "PASS" if result.success else "FAIL"
+            self.after(0, lambda r=result, i=icon: self._log(
+                f"   {i}: {r.passed} passed, {r.failed} failed, "
+                f"{r.errors} errors, {r.skipped} skipped"))
+            self.after(0, lambda r=result: self._show_results(r))
+
+            if result.success:
+                self.after(0, lambda: self._log("   All tests pass after repair."))
+                break
+
+        final = self.exec_result
+        self.after(0, lambda: self._set_step(
+            "repair", "done" if (final and final.success) else "error"))
+        self.after(0, lambda: self._set_step(
+            "execute", "done" if (final and final.success) else "error"))
 
     def _show_results(self, result: TestResult):
         self.results_text.delete("1.0", "end")

@@ -5,15 +5,17 @@ A Windows desktop app that generates and runs Playwright tests from Jira tickets
 ## How It Works
 
 ```
-Jira Ticket → Crawl Target Pages → Fetch Code Changes → AI Generates Tests → Playwright Executes → Results
+Jira Ticket → Crawl Target Pages → Fetch Code Changes → AI Generates Tests → Lint + Auto-Fix → Playwright Executes → AI Repairs Failures → Results
 ```
 
 1. **Fetch** a Jira ticket (Cloud or Server/DC)
-2. **Crawl** the target app pages mentioned in the ticket — captures real DOM (buttons, inputs, links, selectors)
+2. **Crawl** the target app pages mentioned in the ticket — captures real DOM (buttons, inputs, links, selectors), expands dropdown menus, and takes ARIA accessibility snapshots. Cached per ticket for fast re-runs.
 3. **Fetch code changes** from Bitbucket using the ticket key (e.g. PDM-7200) — finds linked commits and extracts diffs
 4. **AI generates** Playwright tests using ticket requirements, real page structure, and actual code changes
-5. **Playwright executes** the tests in Google Chrome with saved auth state
-6. **Results** displayed with pass/fail per test, human-readable failure explanations, and raw pytest output
+5. **Lint** the generated code against the crawled DOM — hallucinated selectors and known-bad patterns are flagged and auto-fixed by a targeted AI call before execution
+6. **Playwright executes** the tests in Google Chrome with saved auth state (flaky failures retried once)
+7. **AI repairs failures** — failing tests + their real error output go back to the model for a fix, then re-run (up to 2 rounds)
+8. **Results** displayed with pass/fail per test, human-readable failure explanations, and raw pytest output
 
 ---
 
@@ -93,8 +95,11 @@ Add your app URLs in **Settings → Target Application URLs**. These populate th
 - Opens Google Chrome with anti-detection (spoofed `navigator.webdriver`, custom user agent)
 - If a login page is detected, waits up to 5 minutes for you to log in
 - Saves auth state (`auth_state.json`) for reuse during test execution
-- Captures page snapshots: headings, buttons, inputs, links, forms, visible text
+- Captures page snapshots: headings, buttons, inputs, links, forms, visible text, and `data-testid` attributes
+- **Expands dropdown menus**: clicks visible dropdown toggles (`.dropdown-toggle`, `data-toggle`, `aria-haspopup`) and records the revealed menu items — so the AI knows which links are hidden until a toggle is clicked, and which interaction pattern to use
+- **ARIA snapshots**: captures the accessibility tree (roles + names) per page, enabling robust `get_by_role()` locators
 - Recognises production/staging URL variants in tickets and rewrites to your target host
+- **Per-ticket cache**: crawl snapshots + Bitbucket context are cached for 60 minutes (`%APPDATA%\QBot\cache\`). Re-running the same ticket skips the crawl entirely — no Chrome window, no re-login — as long as the saved auth state still exists
 
 ### Code Context (Bitbucket)
 
@@ -110,18 +115,38 @@ Add your app URLs in **Settings → Target Application URLs**. These populate th
 - Sends ticket text + real page context + code diffs to the selected AI model
 - Generated tests use actual selectors from the crawled pages and understand implementation details from code changes
 - The AI's mindset is driven by the active **Team Profile** (see [Team Profiles](#team-profiles) below) so different teams can use different style rules, tech-stack hints, selector conventions and product glossaries
+- **Token budgeting**: prompt size is estimated up front and contexts are trimmed *before* sending (priority: ticket > page DOM > code diffs). Code context is trimmed by dropping whole commit-diff sections, never by slicing mid-hunk
 - Strips AI-generated fixture redefinitions (AST-based) to avoid conflicts with conftest
-- Validates output contains `def test_` before proceeding
-- Auto-fallback: if prompt is too large or the model returns no choices, truncates code context progressively (full → 1/3 → none)
+- Validates output contains `def test_` and parses as valid Python — a truncated completion triggers one "be more concise" retry instead of failing later at pytest collection
+- Auto-fallback: if the model still reports the prompt is too large or returns no choices, truncates code context progressively (full → 1/3 → none)
+
+### Lint + Auto-Fix
+
+Before any test executes, the generated code is checked by a deterministic linter (`test_linter.py`) against the crawled DOM snapshots:
+
+- **Errors** (definitely wrong): `to_have_title()`, `to_have_url("/relative")`, `.check()`/`.is_checked()` on elements the snapshot proves are not native checkboxes
+- **Warnings** (suspicious): exact `to_have_count(N)` with guessed numbers, `#id` / `[name=]` / `text=` / `get_by_text()` referencing selectors or text never seen in any crawled page (hallucination detection)
+- Flagged issues are sent to the AI in one targeted fix call along with the DOM snapshots; the corrected file replaces the original. If the fix fails, the original code is kept — the linter never blocks the pipeline
 
 ### Test Execution
 
-- Runs via `pytest` with `-v --tb=short -p no:playwright`
+- Runs via `pytest` with `-v --tb=short -p no:playwright --junitxml=...`
+- Uses the correct Python interpreter (`sys.executable` from source; `python` on PATH from the frozen exe)
 - Reuses auth state from crawl step (usually no second login needed)
 - Each test gets a fresh browser tab in the shared authenticated context
-- Results parsed from pytest output: pass/fail counts + individual test names
-- Failed tests show human-readable failure explanations (e.g. "Timed out after 30s — the element exists but is not visible")
+- **Flaky-failure retries**: when `pytest-rerunfailures` is installed, failed tests are retried once (`--reruns 1 --reruns-delay 2`) so transient timing failures don't reach the repair loop
+- Results parsed from **JUnit XML** (structured, reliable) with regex parsing of console output as fallback
+- Failed tests show human-readable failure explanations (e.g. "Timed out after 30s — the element exists but is not visible") plus the full traceback for the repair loop
 - Raw pytest output shown in Test Results tab for debugging failures
+
+### AI Repair Loop (Self-Healing)
+
+If any tests fail after execution:
+
+- Failing tests + their actual pytest errors + the DOM snapshots are sent back to the model
+- The model fixes **only** the failing tests (passing tests are kept verbatim) — or deletes a test if the DOM proves its assertion can never pass
+- The repaired file is re-executed; up to **2 repair rounds**, stopping early when everything passes
+- Repaired code is AST-validated; any bad output keeps the previous version, so the pipeline never regresses
 
 ### Replay
 
@@ -371,17 +396,19 @@ qbot/
   config.py           # Runtime config dataclass
   settings.py         # JSON persistence (%APPDATA%\QBot\)
   copilot_auth.py     # GitHub Copilot OAuth device flow + token management
-  ai_generator.py     # AI prompt + Copilot API calls
+  ai_generator.py     # AI prompt + Copilot API calls, token budgeting, repair/lint-fix calls
   profiles.py         # Team Profiles — per-team style/tech/selector/glossary
+  test_linter.py      # Deterministic linter — validates generated code against crawled DOM
+  context_cache.py    # Per-ticket cache for crawl snapshots + Bitbucket context
   bitbucket_client.py # Bitbucket Cloud commit/diff fetching
-  page_crawler.py     # Playwright crawler, URL extraction, DOM snapshots
-  test_runner.py      # pytest execution, conftest generation, result parsing
+  page_crawler.py     # Playwright crawler, URL extraction, DOM/ARIA snapshots, menu expansion
+  test_runner.py      # pytest execution, conftest generation, JUnit XML result parsing
   jira_client.py      # Jira Cloud/Server ticket fetching
   ui/
     app.py            # Main window, view transitions
     login_view.py     # Jira login screen
     ticket_view.py    # Ticket input, URL/model selection
-    runner_view.py    # Pipeline execution, live log, results display
+    runner_view.py    # Pipeline execution (crawl→generate→lint→execute→repair), live log, results
     settings_dialog.py # Settings modal with Copilot auth + active profile picker
     profiles_dialog.py # Team Profiles editor (list + form)
     styles.py         # VS Code Dark color palette, fonts
@@ -449,6 +476,26 @@ Hardened the Default profile's BASE rules by adding `GOOD:` / `BAD:` examples fo
 
 Also: defensive response extraction (`_extract_openai_text` / `_extract_anthropic_text`) so empty `choices` arrays from the Copilot route raise a meaningful `RuntimeError` instead of `IndexError`; the same error message is matched by the auto-truncate retry path so context-overflow failures recover gracefully. Trimmed the model dropdown to the Claude 4.5 series (Sonnet/Opus/Haiku) — the 4.6/4.7 variants are not consistently available on the Copilot route.
 
+### Phase 26: Accuracy & Efficiency Overhaul (June 11, 2026)
+
+A five-part accuracy push followed by three efficiency upgrades:
+
+**Structured results** — pytest now writes JUnit XML, parsed with stdlib `ElementTree`; the regex console parser remains only as a fallback. Each result carries the full failure traceback, which feeds the repair loop.
+
+**Deterministic linter** (`test_linter.py`) — hard rules that previously lived only as prompt pleas are now enforced in code. Builds an index of every id/name/button/link/menu-item/ARIA string the crawler actually saw, then flags hallucinated selectors, `to_have_title`/`to_have_url("/relative")`, guessed `to_have_count(N)`, and checkbox-API misuse on non-native elements. Flagged issues are auto-fixed by one targeted AI call before execution.
+
+**Self-healing repair loop** — new pipeline step "4. AI Repairs Failures": failing tests + real errors + DOM snapshots go back to the model, which fixes only the failures; repaired tests re-run, bounded to 2 rounds. All AI-returned code is AST-validated with keep-previous-on-failure semantics.
+
+**Token budgeting** — prompt size is estimated up front and contexts trimmed pre-flight (whole diff sections, never mid-hunk), eliminating the wasted fail-then-retry round-trip. Truncated model output (SyntaxError) gets one "be concise" retry.
+
+**Frozen-exe fix** — pytest is launched via `sys.executable` from source / `python` on PATH from the PyInstaller exe.
+
+**Richer crawls** — the crawler now clicks dropdown toggles and records the revealed menu items, captures ARIA accessibility snapshots per page, and prefers `data-testid` selectors. The AI no longer guesses whether a link is hidden inside an unopened menu.
+
+**Flaky-test reruns** — `pytest-rerunfailures` retries each failure once so transient ASP.NET postback timing issues never reach the repair loop as "real" failures.
+
+**Per-ticket context cache** (`context_cache.py`) — crawl snapshots + Bitbucket context are cached for 60 minutes keyed by ticket + target URL. Re-running the same ticket skips the crawl and Bitbucket fetch entirely.
+
 ---
 
 ### Key Lessons Learned
@@ -462,3 +509,6 @@ Also: defensive response extraction (`_extract_openai_text` / `_extract_anthropi
 7. **One generic prompt does not fit every team** — Different products, different stacks, different QA cultures. Splitting the prompt into a fixed runner contract + a team-editable profile lets each team carry their own mindset without forking the tool.
 8. **The end of the prompt gets the most attention** — On long prompts, models suffer a "lost in the middle" attention dip. A short pre-flight checklist at the very end catches the rules they would otherwise skip.
 9. **Defensive parsing on AI responses** — Empty `choices` arrays surface as opaque `IndexError`s. Extract text through a helper that raises a meaningful error AND signals the retry path to truncate context.
+10. **Enforce hard rules in code, not prose** — No matter how emphatic the prompt, models still occasionally emit forbidden patterns. A deterministic linter that validates against the crawled DOM catches what the prompt misses, and one targeted fix call is cheaper than a failed test run.
+11. **Real error output is the best repair prompt** — Feeding failing tests back with their actual tracebacks + DOM snapshots fixes most failures in one round; bounding the loop prevents token burn on unfixable tests.
+12. **Count tokens before sending, not after failing** — A pre-flight token estimate plus structure-aware trimming (drop whole diff sections, never mid-hunk) replaces an entire wasted API round-trip.
