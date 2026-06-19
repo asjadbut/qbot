@@ -1,0 +1,1334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QBot - AI-Powered Test Automation from Jira</title>
+  <link rel="icon" type="image/png" href="QBot.png">
+  <link rel="apple-touch-icon" href="QBot.png">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b1020;
+      --bg2: #111827;
+      --primary: #2563eb;
+      --primary2: #3b82f6;
+      --accent: #22c55e;
+      --text: #ffffff;
+      --muted: #94a3b8;
+      --card: #131c31;
+      --border: #24324d;
+    }
+    
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    
+    .container {
+      width: min(1200px, 90%);
+      margin: auto;
+      max-width: 1200px;
+      padding: 0 20px;
+    }
+
+    /* Offset anchor targets so they aren't hidden under the sticky header */
+    section[id],
+    [id="models"] {
+      scroll-margin-top: 90px;
+    }
+    
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(12px);
+      background: rgba(11, 16, 32, 0.8);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    
+    .nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 20px 0;
+    }
+    
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 24px;
+      font-weight: 800;
+      text-decoration: none;
+      color: var(--text);
+      transition: 0.3s;
+    }
+    
+    .logo:hover {
+      color: var(--primary);
+    }
+    
+    .logo-icon {
+      width: 42px;
+      height: 42px;
+    }
+    
+    .nav-links {
+      display: flex;
+      gap: 30px;
+    }
+    
+    .nav-links a {
+      color: var(--muted);
+      text-decoration: none;
+      transition: 0.3s;
+    }
+    
+    .nav-links a:hover {
+      color: white;
+    }
+    
+    .hero {
+      padding: 100px 0;
+      text-align: center;
+      background: radial-gradient(circle at top, rgba(37, 99, 235, 0.35), transparent 50%);
+    }
+    
+    .badge {
+      display: inline-block;
+      padding: 8px 16px;
+      border: 1px solid rgba(59, 130, 246, 0.4);
+      background: rgba(37, 99, 235, 0.15);
+      border-radius: 999px;
+      color: #93c5fd;
+      margin-bottom: 25px;
+    }
+    
+    .hero h1 {
+      font-size: 64px;
+      font-weight: 800;
+      max-width: 900px;
+      margin: auto;
+      line-height: 1.1;
+    }
+    
+    .hero p {
+      max-width: 800px;
+      margin: 30px auto;
+      color: var(--muted);
+      font-size: 20px;
+    }
+    
+    .cta {
+      display: flex;
+      justify-content: center;
+      gap: 15px;
+      flex-wrap: wrap;
+      margin-top: 40px;
+    }
+    
+    .btn {
+      padding: 14px 28px;
+      border-radius: 12px;
+      text-decoration: none;
+      font-weight: 600;
+      cursor: pointer;
+      transition: 0.3s;
+      display: inline-block;
+    }
+    
+    .btn-primary {
+      background: linear-gradient(135deg, var(--primary), var(--primary2));
+      color: white;
+    }
+    
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 25px rgba(37, 99, 235, 0.3);
+    }
+    
+    .btn-secondary {
+      border: 1px solid var(--border);
+      color: white;
+      background: transparent;
+    }
+    
+    .btn-secondary:hover {
+      background: rgba(37, 99, 235, 0.1);
+      border-color: var(--primary);
+    }
+    
+    .workflow {
+      padding: 100px 0;
+    }
+    
+    .section-title {
+      text-align: center;
+      margin-bottom: 60px;
+    }
+    
+    .section-title h2 {
+      font-size: 42px;
+      font-weight: 800;
+      margin-bottom: 15px;
+    }
+    
+    .section-title p {
+      color: var(--muted);
+      margin-top: 15px;
+      font-size: 18px;
+    }
+    
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 20px;
+    }
+    
+    .step {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 25px;
+      transition: 0.3s;
+    }
+    
+    .step:hover {
+      border-color: var(--primary);
+      transform: translateY(-5px);
+    }
+    
+    .step-number {
+      color: #60a5fa;
+      font-weight: 700;
+      margin-bottom: 15px;
+      font-size: 24px;
+    }
+    
+    .features {
+      padding: 100px 0;
+      background: var(--bg2);
+    }
+    
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 25px;
+    }
+    
+    .feature {
+      background: var(--card);
+      border: 1px solid var(--border);
+      padding: 30px;
+      border-radius: 20px;
+      transition: 0.3s;
+    }
+    
+    .feature:hover {
+      border-color: var(--primary);
+    }
+    
+    .feature h3 {
+      margin-bottom: 15px;
+      color: #60a5fa;
+    }
+    
+    .feature p {
+      color: var(--muted);
+      line-height: 1.8;
+    }
+    
+    .models {
+      padding: 100px 0;
+    }
+    
+    .model-box {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 40px;
+    }
+    
+    .model-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+    
+    .model-item {
+      padding: 15px;
+      border-radius: 12px;
+      background: #0f172a;
+      border: 1px solid var(--border);
+      text-align: center;
+      transition: 0.3s;
+    }
+    
+    .model-item:hover {
+      border-color: var(--primary);
+      background: rgba(37, 99, 235, 0.1);
+    }
+    
+    .setup {
+      padding: 100px 0;
+    }
+    
+    .setup-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 30px;
+      margin-bottom: 50px;
+    }
+    
+    .setup-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      padding: 30px;
+      border-radius: 20px;
+      transition: 0.3s;
+    }
+    
+    .setup-card:hover {
+      border-color: var(--primary);
+      transform: translateY(-3px);
+    }
+    
+    .setup-card h3 {
+      color: #60a5fa;
+      margin-bottom: 20px;
+      font-size: 20px;
+    }
+    
+    .setup-card ul {
+      list-style: none;
+      padding: 0;
+    }
+    
+    .setup-card li {
+      padding: 8px 0;
+      padding-left: 24px;
+      position: relative;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    
+    .setup-card li:before {
+      content: "";
+      position: absolute;
+      left: 2px;
+      top: 14px;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--primary);
+    }
+    
+    .setup-card p {
+      color: var(--muted);
+      margin: 10px 0;
+      line-height: 1.6;
+    }
+    
+    .setup-card code {
+      background: rgba(37, 99, 235, 0.1);
+      color: #93c5fd;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+    }
+    
+    .setup-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+      margin-top: 20px;
+    }
+    
+    .setup-row-item {
+      background: rgba(37, 99, 235, 0.05);
+      border: 1px solid var(--border);
+      padding: 15px;
+      border-radius: 12px;
+    }
+    
+    .setup-row-item strong {
+      color: var(--primary);
+    }
+    
+    .security {
+      padding: 100px 0;
+      background: var(--bg2);
+    }
+    
+    .security-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 25px;
+    }
+    
+    .security-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      padding: 30px;
+      border-radius: 20px;
+    }
+    
+    .security-card h3 {
+      margin-bottom: 20px;
+      color: #60a5fa;
+    }
+    
+    .security-card ul {
+      list-style: none;
+    }
+    
+    .security-card li {
+      padding: 8px 0;
+      padding-left: 24px;
+      position: relative;
+      color: var(--muted);
+    }
+    
+    .security-card li:before {
+      content: "✓";
+      position: absolute;
+      left: 0;
+      color: #60a5fa;
+      font-weight: bold;
+    }
+    
+    .footer {
+      padding: 60px 0;
+      text-align: center;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    
+    .footer h2 {
+      margin-bottom: 10px;
+    }
+    
+    .footer p {
+      color: var(--muted);
+    }
+    
+    @media (max-width: 900px) {
+      .hero h1 {
+        font-size: 42px;
+      }
+      
+      .pipeline,
+      .feature-grid,
+      .model-grid,
+      .security-grid {
+        grid-template-columns: 1fr;
+      }
+      
+      .nav-links {
+        display: none;
+      }
+
+      .demo-stage {
+        grid-template-columns: 1fr !important;
+      }
+
+      .demo-flow {
+        flex-direction: row;
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+    }
+
+    /* ===== Scroll reveal ===== */
+    .reveal {
+      opacity: 0;
+      transform: translateY(45px);
+      transition: opacity 1.1s cubic-bezier(0.22, 1, 0.36, 1), transform 1.1s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .reveal.d1 { transition-delay: 0.15s; }
+    .reveal.d2 { transition-delay: 0.30s; }
+    .reveal.d3 { transition-delay: 0.45s; }
+    .reveal.d4 { transition-delay: 0.60s; }
+
+    /* Subtle scale-in variant for cards */
+    .reveal.scale {
+      transform: translateY(45px) scale(0.96);
+    }
+
+    .reveal.scale.visible {
+      transform: translateY(0) scale(1);
+    }
+
+    /* ===== Animated "Watch It Work" demo ===== */
+    .demo {
+      padding: 90px 0;
+      background: linear-gradient(180deg, var(--bg) 0%, var(--bg2) 100%);
+      overflow: hidden;
+    }
+
+    .demo-stage {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 40px;
+      align-items: center;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 40px;
+    }
+
+    /* Vertical list of pipeline stages */
+    .demo-flow {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      position: relative;
+    }
+
+    .demo-node {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 12px 16px;
+      border-radius: 14px;
+      border: 1px solid transparent;
+      color: var(--muted);
+      transition: all 0.4s ease;
+      cursor: pointer;
+    }
+
+    .demo-node .dot {
+      width: 34px;
+      height: 34px;
+      flex: 0 0 34px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: #0f172a;
+      border: 1px solid var(--border);
+      font-weight: 700;
+      font-size: 14px;
+      transition: all 0.4s ease;
+    }
+
+    .demo-node .label {
+      font-weight: 600;
+      font-size: 15px;
+    }
+
+    .demo-node.active {
+      border-color: var(--primary);
+      background: rgba(37, 99, 235, 0.12);
+      color: #fff;
+      transform: translateX(6px);
+    }
+
+    .demo-node.active .dot {
+      background: linear-gradient(135deg, var(--primary), var(--primary2));
+      border-color: transparent;
+      color: #fff;
+      box-shadow: 0 0 0 6px rgba(37, 99, 235, 0.18);
+    }
+
+    .demo-node.done {
+      color: #cbd5e1;
+    }
+
+    .demo-node.done .dot {
+      background: rgba(34, 197, 94, 0.15);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    /* Right-side simulated screen */
+    .demo-screen {
+      background: #0a0f1e;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+      min-height: 360px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .demo-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 18px;
+      background: #111a2e;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .demo-bar .circle {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+
+    .demo-bar .c1 { background: #ef4444; }
+    .demo-bar .c2 { background: #f59e0b; }
+    .demo-bar .c3 { background: #22c55e; }
+
+    .demo-bar .title {
+      margin-left: 10px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .demo-body {
+      padding: 24px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .demo-head {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .demo-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      font-size: 24px;
+      background: rgba(37, 99, 235, 0.15);
+      border: 1px solid rgba(59, 130, 246, 0.4);
+    }
+
+    .demo-head h3 {
+      font-size: 22px;
+      margin-bottom: 2px;
+    }
+
+    .demo-head p {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .demo-console {
+      flex: 1;
+      font-family: 'Courier New', monospace;
+      font-size: 13.5px;
+      line-height: 1.9;
+      color: #93c5fd;
+      background: #060b16;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 18px;
+      min-height: 150px;
+    }
+
+    .demo-console .line {
+      opacity: 0;
+      transform: translateX(-8px);
+      animation: lineIn 0.4s forwards;
+    }
+
+    .demo-console .ok { color: var(--accent); }
+    .demo-console .warn { color: #f59e0b; }
+    .demo-console .muted { color: var(--muted); }
+
+    @keyframes lineIn {
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    .demo-progress {
+      height: 6px;
+      border-radius: 999px;
+      background: #16203a;
+      overflow: hidden;
+    }
+
+    .demo-progress span {
+      display: block;
+      height: 100%;
+      width: 0;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--primary), var(--accent));
+      transition: width 0.5s ease;
+    }
+
+    .demo-controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      margin-top: 26px;
+    }
+
+    .demo-btn {
+      padding: 10px 22px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+      transition: 0.3s;
+      font-family: inherit;
+    }
+
+    .demo-btn:hover {
+      border-color: var(--primary);
+      background: rgba(37,99,235,0.12);
+    }
+
+    /* Animated connectors on the static pipeline grid */
+    .pipeline { position: relative; }
+
+    .step {
+      position: relative;
+      opacity: 0;
+      transform: translateY(30px);
+      animation: stepIn 1s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+    }
+
+    @keyframes stepIn {
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .step .step-number {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .step .step-number::after {
+      content: "";
+      flex: 1;
+      height: 2px;
+      min-width: 30px;
+      background: linear-gradient(90deg, var(--primary), transparent);
+      opacity: 0.5;
+    }
+
+    /* ===== Section-specific (light) accents ===== */
+
+    /* Hero: subtle, static background glow — no motion behind the text */
+    .hero { position: relative; overflow: hidden; }
+
+    .hero .container { position: relative; z-index: 1; }
+
+    .hero::before,
+    .hero::after {
+      content: "";
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(90px);
+      opacity: 0.22;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    .hero::before {
+      width: 360px;
+      height: 360px;
+      background: rgba(37, 99, 235, 0.4);
+      top: -100px;
+      left: -80px;
+    }
+
+    .hero::after {
+      width: 300px;
+      height: 300px;
+      background: rgba(34, 197, 94, 0.22);
+      bottom: -110px;
+      right: -60px;
+    }
+
+    /* Workflow: gentle hover lift only (connector line stays static) */
+    .step:hover {
+      box-shadow: 0 12px 40px rgba(37, 99, 235, 0.16);
+    }
+
+    /* Features: subtle hover lift + accent border (no idle motion) */
+    .feature { position: relative; }
+
+    .feature:hover { transform: translateY(-6px); }
+
+    .feature::before {
+      content: "";
+      position: absolute;
+      inset: -1px;
+      border-radius: 20px;
+      padding: 1px;
+      background: linear-gradient(130deg, transparent 30%, rgba(59, 130, 246, 0.55), transparent 70%);
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      opacity: 0;
+      transition: opacity 0.4s ease;
+      pointer-events: none;
+    }
+
+    .feature:hover::before { opacity: 1; }
+
+    /* Models: light shimmer sweep only on hover */
+    .model-item {
+      position: relative;
+      overflow: hidden;
+    }
+
+    .model-item::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: -150%;
+      width: 70%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.25), transparent);
+      transform: skewX(-20deg);
+      pointer-events: none;
+    }
+
+    .model-item:hover::after { animation: sweep 1.1s ease; }
+
+    @keyframes sweep {
+      0%   { left: -150%; }
+      100% { left: 160%; }
+    }
+
+    /* Respect users who prefer reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      .feature, .model-item::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <div class="container">
+    <div class="nav">
+      <a href="https://github.com/asjadbut/qbot" class="logo" target="_blank" rel="noopener noreferrer">
+        <img src="QBot.png" alt="QBot Logo" class="logo-icon">
+        <span>QBot</span>
+      </a>
+      <div class="nav-links">
+        <a href="#demo">Demo</a>
+        <a href="#workflow">Workflow</a>
+        <a href="#features">Features</a>
+        <a href="#setup">Setup</a>
+        <a href="#models">Models</a>
+        <a href="#security">Security</a>
+      </div>
+    </div>
+  </div>
+</header>
+<section class="hero">
+  <div class="container">
+    <div class="badge">AI-Powered Playwright Test Generation</div>
+    <h1>Generate, Execute & Self-Heal Tests Directly From Jira Tickets</h1>
+    <p>QBot transforms Jira requirements into production-ready Playwright automation using AI, real DOM analysis, code diffs from Bitbucket, automated linting, execution, and self-healing repair loops.</p>
+    <div class="cta">
+      <a href="https://github.com/asjadbut/qbot/releases/tag/v1.0.0" class="btn btn-primary" target="_blank" rel="noopener noreferrer">Download QBot</a>
+      <a href="#workflow" class="btn btn-secondary">See How It Works</a>
+    </div>
+  </div>
+</section>
+<section class="demo" id="demo">
+  <div class="container">
+    <div class="section-title reveal">
+      <h2>Watch It Work</h2>
+      <p>An animated walkthrough of the QBot pipeline — from Jira ticket to self-healed tests.</p>
+    </div>
+    <div class="demo-stage reveal">
+      <div class="demo-flow" id="demoFlow">
+        <!-- nodes injected by JS -->
+      </div>
+      <div class="demo-screen">
+        <div class="demo-bar">
+          <span class="circle c1"></span>
+          <span class="circle c2"></span>
+          <span class="circle c3"></span>
+          <span class="title" id="demoScreenTitle">QBot — Pipeline Runner</span>
+        </div>
+        <div class="demo-body">
+          <div class="demo-head">
+            <div class="demo-icon" id="demoIcon">🎫</div>
+            <div>
+              <h3 id="demoTitle">Fetch Jira Ticket</h3>
+              <p id="demoDesc">Connecting to Jira and retrieving requirements.</p>
+            </div>
+          </div>
+          <div class="demo-console" id="demoConsole"></div>
+          <div class="demo-progress"><span id="demoBar"></span></div>
+        </div>
+      </div>
+    </div>
+    <div class="demo-controls">
+      <button class="demo-btn" id="demoReplay">▶ Replay Animation</button>
+      <button class="demo-btn" id="demoToggle">⏸ Pause</button>
+    </div>
+  </div>
+</section>
+<section class="workflow" id="workflow">
+  <div class="container">
+    <div class="section-title">
+      <h2>End-to-End AI Testing Pipeline</h2>
+      <p>From Jira ticket to executed Playwright tests in minutes.</p>
+    </div>
+    <div class="pipeline">
+      <div class="step">
+        <div class="step-number">01</div>
+        <h3>Fetch Jira Ticket</h3>
+        <p>Connect to Jira Cloud or Server/DC and retrieve requirements, acceptance criteria and comments.</p>
+      </div>
+      <div class="step">
+        <div class="step-number">02</div>
+        <h3>Crawl Application</h3>
+        <p>Capture real DOM structure, forms, selectors, links, dropdowns and ARIA snapshots.</p>
+      </div>
+      <div class="step">
+        <div class="step-number">03</div>
+        <h3>Fetch Code Changes</h3>
+        <p>Locate linked Bitbucket commits and extract relevant diffs for implementation awareness.</p>
+      </div>
+      <div class="step">
+        <div class="step-number">04</div>
+        <h3>Generate Tests</h3>
+        <p>AI creates Playwright tests using ticket requirements, DOM context and code changes.</p>
+      </div>
+      <div class="step">
+        <div class="step-number">05</div>
+        <h3>Lint & Auto-Fix</h3>
+        <p>Detect hallucinated selectors and invalid patterns before execution.</p>
+      </div>
+      <div class="step">
+        <div class="step-number">06</div>
+        <h3>Execute</h3>
+        <p>Run tests in Chrome using saved authentication state and retry flaky failures.</p>
+      </div>
+      <div class="step">
+        <div class="step-number">07</div>
+        <h3>AI Self-Healing</h3>
+        <p>Failures are analyzed and repaired automatically using real error output.</p>
+      </div>
+      <div class="step">
+        <div class="step-number">08</div>
+        <h3>Results</h3>
+        <p>View pass/fail status, human-readable explanations and raw pytest output.</p>
+      </div>
+    </div>
+  </div>
+</section>
+<section class="features" id="features">
+  <div class="container">
+    <div class="section-title">
+      <h2>Why Teams Use QBot</h2>
+      <p>Built for modern QA, SDET and engineering teams.</p>
+    </div>
+    <div class="feature-grid">
+      <div class="feature">
+        <h3>Real DOM Understanding</h3>
+        <p>No blind AI generation. QBot crawls actual pages and uses real selectors.</p>
+      </div>
+      <div class="feature">
+        <h3>Bitbucket-Aware Testing</h3>
+        <p>Code diffs provide implementation context for higher quality test coverage.</p>
+      </div>
+      <div class="feature">
+        <h3>ARIA Accessibility Snapshots</h3>
+        <p>Generate robust get_by_role() locators and accessibility-aware tests.</p>
+      </div>
+      <div class="feature">
+        <h3>Self-Healing Automation</h3>
+        <p>Failed tests are repaired automatically using actual execution errors.</p>
+      </div>
+      <div class="feature">
+        <h3>Team Profiles</h3>
+        <p>Customize testing style, selector conventions, technology stack rules and product glossary.</p>
+      </div>
+      <div class="feature">
+        <h3>Smart Context Management</h3>
+        <p>Token budgeting, context trimming and intelligent prompt optimization.</p>
+      </div>
+    </div>
+  </div>
+</section>
+<section class="setup" id="setup">
+  <div class="container">
+    <div class="section-title">
+      <h2>Setup & Configuration</h2>
+      <p>Get QBot running in minutes.</p>
+    </div>
+    
+    <div class="setup-grid">
+      <div class="setup-card">
+        <h3>Prerequisites</h3>
+        <ul>
+          <li>Python 3.12 or higher</li>
+          <li>Google Chrome browser</li>
+          <li>GitHub Copilot subscription (org or individual)</li>
+        </ul>
+        <p style="margin-top: 20px; font-size: 14px; color: #94a3b8;">
+          No external API keys needed — QBot uses the same Copilot API that powers VS Code Copilot Chat.
+        </p>
+      </div>
+      
+      <div class="setup-card">
+        <h3>Quick Install</h3>
+        <ul>
+          <li><strong>From Source:</strong></li>
+          <li style="margin-left: 10px;"><code>pip install -r requirements.txt</code></li>
+          <li style="margin-left: 10px;"><code>playwright install chromium</code></li>
+          <li style="margin-left: 10px;"><code>python main.py</code></li>
+        </ul>
+        <ul style="margin-top: 15px;">
+          <li><strong>Pre-built Executable:</strong></li>
+          <li style="margin-left: 10px;"><a href="https://github.com/asjadbut/qbot/releases/tag/v1.0.0" target="_blank" rel="noopener noreferrer" style="color: #60a5fa; text-decoration: none;">Download <code>QBot.exe</code></a> (~70 MB)</li>
+        </ul>
+      </div>
+      
+      <div class="setup-card">
+        <h3>GitHub Copilot Authorization</h3>
+        <ul>
+          <li>Open QBot Settings (gear icon)</li>
+          <li>Click <strong>Authorize Copilot</strong></li>
+          <li>Browser opens to github.com/login/device</li>
+          <li>Enter the device code shown in QBot</li>
+          <li>OAuth token is saved and auto-refreshes</li>
+        </ul>
+        <p style="margin-top: 15px; font-size: 13px;">
+          Token persists across app restarts. No manual refresh required.
+        </p>
+      </div>
+      
+      <div class="setup-card">
+        <h3>Connect Your Services</h3>
+        <ul>
+          <li><strong>Jira:</strong> Cloud (atlassian.net) or Server/DC with API token or PAT</li>
+          <li><strong>Bitbucket:</strong> Cloud API token for linked commit context</li>
+          <li><strong>Target URLs:</strong> Add your app URLs in Settings for quick access</li>
+        </ul>
+        <p style="margin-top: 15px; font-size: 13px;">
+          Check "Remember credentials" to auto-fill on next launch.
+        </p>
+      </div>
+    </div>
+    
+    <div class="section-title" id="models" style="margin: 60px 0 30px; border-top: 1px solid var(--border); padding-top: 40px;">
+      <h2>Available AI Models</h2>
+      <p>Select the model that best fits your team's needs.</p>
+    </div>
+    
+    <div class="setup-row">
+      <div class="setup-row-item">
+        <strong>Recommended</strong><br>
+        Claude Sonnet 4.5<br>
+        <span style="font-size: 12px; color: var(--muted);">200K context</span>
+      </div>
+      <div class="setup-row-item">
+        <strong>Most Capable</strong><br>
+        Claude Opus 4.5<br>
+        <span style="font-size: 12px; color: var(--muted);">200K context</span>
+      </div>
+      <div class="setup-row-item">
+        <strong>Fastest</strong><br>
+        Claude Haiku 4.5<br>
+        <span style="font-size: 12px; color: var(--muted);">200K context</span>
+      </div>
+    </div>
+    
+    <div class="setup-row">
+      <div class="setup-row-item">
+        GPT-5.5<br>
+        <span style="font-size: 12px; color: var(--muted);">272K context</span>
+      </div>
+      <div class="setup-row-item">
+        Gemini 3.1 Pro<br>
+        <span style="font-size: 12px; color: var(--muted);">200K context</span>
+      </div>
+      <div class="setup-row-item">
+        GPT-4o<br>
+        <span style="font-size: 12px; color: var(--muted);">128K context</span>
+      </div>
+    </div>
+    
+    <p style="text-align: center; margin-top: 30px; color: var(--muted);">
+      Switch models anytime in Settings → Team Profile. Each team can have different model preferences.
+    </p>
+  </div>
+</section>
+<section class="security" id="security">
+  <div class="container">
+    <div class="section-title">
+      <h2>Built With Security In Mind</h2>
+      <p>Your credentials remain local and are never sent to AI models.</p>
+    </div>
+    <div class="security-grid">
+      <div class="security-card">
+        <h3>What Gets Sent To AI</h3>
+        <ul>
+          <li>Jira ticket content</li>
+          <li>DOM snapshots</li>
+          <li>ARIA snapshots</li>
+          <li>Bitbucket code diffs</li>
+        </ul>
+      </div>
+      <div class="security-card">
+        <h3>What Never Leaves Your Machine</h3>
+        <ul>
+          <li>GitHub OAuth tokens</li>
+          <li>Jira credentials</li>
+          <li>Bitbucket API tokens</li>
+          <li>Browser session cookies</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+<footer class="footer">
+  <div class="container">
+    <h2>QBot</h2>
+    <p>AI-Powered Test Automation from Jira</p>
+    <p style="margin-top: 15px; font-size: 14px;">
+      <strong>Open Source</strong> · 
+      <a href="https://github.com/asjadbut/qbot" target="_blank" rel="noopener noreferrer" style="color: #60a5fa; text-decoration: none; transition: 0.3s;">
+        View on GitHub
+      </a>
+    </p>
+  </div>
+</footer>
+<script>
+  /* ---------- Scroll reveal ---------- */
+  (function () {
+    // Hero entrance
+    document.querySelectorAll('.hero .badge, .hero h1, .hero p, .hero .cta')
+      .forEach(function (el, i) { el.classList.add('reveal', 'd' + (i + 1)); });
+
+    // Auto-tag cards for a slower scale-in reveal
+    document.querySelectorAll(
+      '.feature, .setup-card, .security-card, .model-item, .setup-row-item'
+    ).forEach(function (el, i) {
+      el.classList.add('reveal', 'scale', 'd' + ((i % 4) + 1));
+    });
+
+    // Section headings fade up
+    document.querySelectorAll('.features .section-title, .models .section-title, .setup .section-title, .security .section-title, .workflow .section-title, .demo .section-title')
+      .forEach(function (el) { el.classList.add('reveal'); });
+
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) {
+          e.target.classList.add('visible');
+          io.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0.12 });
+
+    document.querySelectorAll('.reveal').forEach(function (el) { io.observe(el); });
+
+    // Stagger the static pipeline steps (slower)
+    document.querySelectorAll('.pipeline .step').forEach(function (s, i) {
+      s.style.animationDelay = (i * 0.18) + 's';
+    });
+  })();
+
+  /* ---------- Animated "Watch It Work" demo ---------- */
+  (function () {
+    var stages = [
+      {
+        icon: '🎫', title: 'Fetch Jira Ticket',
+        desc: 'Connecting to Jira and retrieving requirements.',
+        lines: [
+          ['muted', '$ qbot run PDM-7200'],
+          ['', 'Connecting to Jira Cloud…'],
+          ['ok', '✔ Ticket fetched: "Add broker permission toggle"'],
+          ['muted', '  3 acceptance criteria · 2 comments']
+        ]
+      },
+      {
+        icon: '🕷️', title: 'Crawl Application',
+        desc: 'Capturing real DOM, dropdowns and ARIA snapshots.',
+        lines: [
+          ['', 'Launching Chrome (authenticated)…'],
+          ['', 'Scanning /settings/permissions'],
+          ['ok', '✔ 42 selectors · 8 inputs · 5 dropdowns'],
+          ['ok', '✔ ARIA accessibility tree captured']
+        ]
+      },
+      {
+        icon: '🔀', title: 'Fetch Code Changes',
+        desc: 'Pulling linked Bitbucket commits and diffs.',
+        lines: [
+          ['', 'Searching Bitbucket for PDM-7200…'],
+          ['ok', '✔ 3 commits found'],
+          ['muted', '  + permission_toggle.tsx'],
+          ['muted', '  + broker_service.py']
+        ]
+      },
+      {
+        icon: '🤖', title: 'Generate Tests',
+        desc: 'AI writes Playwright tests from real context.',
+        lines: [
+          ['', 'Prompting claude-sonnet-4.5…'],
+          ['muted', '  context: ticket + DOM + diffs (61K tokens)'],
+          ['ok', '✔ Generated 5 test cases'],
+          ['muted', '  test_broker_permission_toggle.py']
+        ]
+      },
+      {
+        icon: '🔍', title: 'Lint & Auto-Fix',
+        desc: 'Validating selectors before execution.',
+        lines: [
+          ['', 'Linting against crawled DOM…'],
+          ['warn', '⚠ 1 hallucinated selector found'],
+          ['', 'Requesting targeted AI fix…'],
+          ['ok', '✔ Auto-fixed · 0 issues remaining']
+        ]
+      },
+      {
+        icon: '▶️', title: 'Execute',
+        desc: 'Running tests in Chrome with saved auth state.',
+        lines: [
+          ['', 'pytest -p playwright (chrome)…'],
+          ['ok', '✔ test_toggle_visible_for_admin'],
+          ['ok', '✔ test_toggle_hidden_for_broker'],
+          ['warn', '✘ test_toggle_persists  (timeout)']
+        ]
+      },
+      {
+        icon: '🩹', title: 'AI Self-Healing',
+        desc: 'Repairing failures using real error output.',
+        lines: [
+          ['', 'Sending failure + traceback to AI…'],
+          ['muted', '  wait_for added before assertion'],
+          ['', 'Re-running repaired test…'],
+          ['ok', '✔ test_toggle_persists  PASSED']
+        ]
+      },
+      {
+        icon: '✅', title: 'Results',
+        desc: 'All tests green — ready to commit.',
+        lines: [
+          ['ok', '✔ 5 passed · 0 failed'],
+          ['muted', '  duration: 18.4s'],
+          ['ok', '✔ Self-healed: 1 test'],
+          ['', 'Report saved → results.html']
+        ]
+      }
+    ];
+
+    var flow = document.getElementById('demoFlow');
+    var iconEl = document.getElementById('demoIcon');
+    var titleEl = document.getElementById('demoTitle');
+    var descEl = document.getElementById('demoDesc');
+    var consoleEl = document.getElementById('demoConsole');
+    var barEl = document.getElementById('demoBar');
+    var replayBtn = document.getElementById('demoReplay');
+    var toggleBtn = document.getElementById('demoToggle');
+
+    // Build the node list
+    stages.forEach(function (s, i) {
+      var n = document.createElement('div');
+      n.className = 'demo-node';
+      n.dataset.index = i;
+      n.innerHTML = '<span class="dot">' + (i + 1) + '</span><span class="label">' + s.title + '</span>';
+      n.addEventListener('click', function () { goTo(i, true); });
+      flow.appendChild(n);
+    });
+    var nodes = Array.prototype.slice.call(flow.children);
+
+    var current = -1;
+    var lineTimers = [];
+    var stageTimer = null;
+    var paused = false;
+    var started = false;
+
+    function clearTimers() {
+      lineTimers.forEach(clearTimeout);
+      lineTimers = [];
+      clearTimeout(stageTimer);
+    }
+
+    function renderStage(i) {
+      var s = stages[i];
+      iconEl.textContent = s.icon;
+      titleEl.textContent = s.title;
+      descEl.textContent = s.desc;
+      consoleEl.innerHTML = '';
+      barEl.style.width = '0';
+
+      nodes.forEach(function (n, j) {
+        n.classList.toggle('active', j === i);
+        n.classList.toggle('done', j < i);
+      });
+
+      // Type out console lines one by one
+      s.lines.forEach(function (ln, k) {
+        var t = setTimeout(function () {
+          var div = document.createElement('div');
+          div.className = 'line ' + (ln[0] || '');
+          div.textContent = ln[1];
+          consoleEl.appendChild(div);
+          barEl.style.width = Math.round(((k + 1) / s.lines.length) * 100) + '%';
+        }, 500 + k * 750);
+        lineTimers.push(t);
+      });
+    }
+
+    function goTo(i, manual) {
+      clearTimers();
+      current = i;
+      renderStage(i);
+      if (manual) { paused = true; setToggle(); return; }
+      if (!paused) {
+        stageTimer = setTimeout(function () {
+          goTo((current + 1) % stages.length);
+        }, 4600);
+      }
+    }
+
+    function setToggle() {
+      toggleBtn.textContent = paused ? '▶ Play' : '⏸ Pause';
+    }
+
+    replayBtn.addEventListener('click', function () {
+      paused = false; setToggle(); goTo(0);
+    });
+
+    toggleBtn.addEventListener('click', function () {
+      paused = !paused; setToggle();
+      if (!paused) { goTo((current + 1) % stages.length); }
+      else { clearTimeout(stageTimer); }
+    });
+
+    // Start when the demo scrolls into view
+    var startIO = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting && !started) {
+          started = true;
+          goTo(0);
+          startIO.disconnect();
+        }
+      });
+    }, { threshold: 0.3 });
+    startIO.observe(document.getElementById('demo'));
+  })();
+</script>
+</body>
+</html>
