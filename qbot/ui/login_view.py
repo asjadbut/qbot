@@ -42,18 +42,17 @@ class LoginView(ctk.CTkFrame):
         center.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.42)
 
         # Logo
-        logo_row = ctk.CTkFrame(center, fg_color="transparent")
-        logo_row.pack(pady=(28, 0))
-
         if os.path.exists(_LOGO_PATH):
             logo_img = ctk.CTkImage(light_image=Image.open(_LOGO_PATH),
                                     dark_image=Image.open(_LOGO_PATH),
-                                    size=(40, 40))
-            ctk.CTkLabel(logo_row, image=logo_img, text="").pack(side="left", padx=(0, 6))
-        ctk.CTkLabel(logo_row, text="QBot", font=FONTS["title"], text_color=COLORS["text"]).pack(side="left")
+                                    size=(160, 160))
+            ctk.CTkLabel(center, image=logo_img, text="").pack(pady=(28, 0))
+        else:
+            ctk.CTkLabel(center, text="QBot", font=FONTS["title"],
+                         text_color=COLORS["text"]).pack(pady=(28, 0))
 
         ctk.CTkLabel(center, text="AI-Powered Test Automation",
-                     font=FONTS["body"], text_color=COLORS["accent"]).pack(pady=(4, 4))
+                     font=FONTS["body"], text_color=COLORS["accent"]).pack(pady=(6, 4))
 
 
         # Divider
@@ -200,17 +199,14 @@ class LoginView(ctk.CTkFrame):
         center = ctk.CTkFrame(self, fg_color=COLORS["bg_card"], corner_radius=16, width=450)
         center.place(relx=0.5, rely=0.5, anchor="center")
 
-        # Logo / Title
-        title = ctk.CTkLabel(center, text="🤖 QBot", font=FONTS["title"], text_color=COLORS["accent"])
-        title.pack(pady=(30, 5))
-
-        subtitle = ctk.CTkLabel(
-            center,
-            text="AI-Powered Test Automation",
-            font=FONTS["body"],
-            text_color=COLORS["text_dim"],
-        )
-        subtitle.pack(pady=(0, 20))
+        # Logo
+        if os.path.exists(_LOGO_PATH):
+            logo_img = ctk.CTkImage(light_image=Image.open(_LOGO_PATH),
+                                    dark_image=Image.open(_LOGO_PATH),
+                                    size=(160, 160))
+            ctk.CTkLabel(center, image=logo_img, text="").pack(pady=(28, 6))
+        ctk.CTkLabel(center, text="AI-Powered Test Automation",
+                     font=FONTS["body"], text_color=COLORS["text_dim"]).pack(pady=(0, 20))
 
         # Jira URL
         ctk.CTkLabel(center, text="Jira Server URL", font=FONTS["body_bold"], text_color=COLORS["text"]).pack(

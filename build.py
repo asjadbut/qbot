@@ -21,6 +21,7 @@ def main():
         "--add-data", f"{ctk_path};customtkinter/",
         "--add-data", "qbot.ico;.",
         "--add-data", "qbot_logo.png;.",
+        "--add-data", "qbot_logo_source.png;.",
         "--hidden-import", "jira",
         "--hidden-import", "openai",
         "--hidden-import", "anthropic",
