@@ -40,7 +40,7 @@ playwright install chromium
 python main.py
 ```
 
-Or use the pre-built `dist/QBot.exe`.
+Or download the pre-built Windows executable from the [latest release](https://github.com/asjadbut/qbot/releases/tag/v1.0.0) ([QBot.exe](https://github.com/asjadbut/qbot/releases/download/v1.0.0/QBot.exe), ~70 MB standalone — no Python required).
 
 ---
 
@@ -386,6 +386,8 @@ python build.py
 ```
 
 Produces `dist/QBot.exe` (~80 MB standalone).
+
+Pre-built releases are published at [github.com/asjadbut/qbot/releases](https://github.com/asjadbut/qbot/releases/tag/v1.0.0).
 
 ---
 
