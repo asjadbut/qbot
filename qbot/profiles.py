@@ -21,7 +21,9 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List
 
-SETTINGS_DIR = os.path.join(os.environ.get("APPDATA", str(Path.home())), "QBot")
+from qbot.paths import app_data_dir
+
+SETTINGS_DIR = app_data_dir()
 PROFILES_FILE = os.path.join(SETTINGS_DIR, "profiles.json")
 
 

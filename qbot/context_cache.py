@@ -20,8 +20,9 @@ from pathlib import Path
 
 from qbot.config import config
 from qbot.page_crawler import PageSnapshot
+from qbot.paths import app_data_dir
 
-CACHE_DIR = os.path.join(os.environ.get("APPDATA", str(Path.home())), "QBot", "cache")
+CACHE_DIR = os.path.join(app_data_dir(), "cache")
 
 # How long a cached crawl stays valid. Pages and linked commits rarely change
 # within an hour of working the same ticket.

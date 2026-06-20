@@ -1,8 +1,9 @@
 import os
 import json
 from pathlib import Path
+from qbot.paths import app_data_dir
 
-SETTINGS_DIR = os.path.join(os.environ.get("APPDATA", str(Path.home())), "QBot")
+SETTINGS_DIR = app_data_dir()
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 
 DEFAULTS = {

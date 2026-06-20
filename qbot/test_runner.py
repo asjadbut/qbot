@@ -4,19 +4,13 @@ import subprocess
 import shutil
 from dataclasses import dataclass
 from qbot.config import config
-
-# Common Chrome installation paths on Windows
-_CHROME_PATHS = [
-    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Google\Chrome\Application\chrome.exe"),
-]
+from qbot.paths import chrome_candidates
 
 
 def find_chrome() -> str | None:
     """Return the path to Google Chrome if installed, else None."""
-    for path in _CHROME_PATHS:
-        if os.path.isfile(path):
+    for path in chrome_candidates():
+        if path and os.path.isfile(path):
             return path
     return None
 

@@ -1,6 +1,6 @@
 ﻿# QBot — AI-Powered Test Automation from Jira
 
-A Windows desktop app that generates and runs Playwright tests from Jira tickets using AI.
+A cross-platform desktop app (Windows, macOS, Linux) that generates and runs Playwright tests from Jira tickets using AI.
 
 ## How It Works
 
@@ -24,8 +24,9 @@ Jira Ticket → Crawl Target Pages → Fetch Code Changes → AI Generates Tests
 ### Prerequisites
 
 - Python 3.12+
-- Google Chrome
+- Google Chrome (optional — falls back to Playwright's bundled Chromium)
 - GitHub Copilot subscription (org or individual)
+- OS: Windows, macOS, or Linux
 
 ### Install
 
@@ -40,7 +41,7 @@ playwright install chromium
 python main.py
 ```
 
-Or download the pre-built Windows executable from the [latest release](https://github.com/asjadbut/qbot/releases/tag/v1.0.0) ([QBot.exe](https://github.com/asjadbut/qbot/releases/download/v1.0.0/QBot.exe), ~70 MB standalone — no Python required).
+The pre-built [QBot.exe](https://github.com/asjadbut/qbot/releases/download/v1.0.0/QBot.exe) (~70 MB standalone, no Python required) from the [latest release](https://github.com/asjadbut/qbot/releases/tag/v1.0.0) is **Windows-only**. On macOS and Linux, run from source as shown above (or build a native binary — see [Build](#build)).
 
 ---
 
@@ -99,7 +100,7 @@ Add your app URLs in **Settings → Target Application URLs**. These populate th
 - **Expands dropdown menus**: clicks visible dropdown toggles (`.dropdown-toggle`, `data-toggle`, `aria-haspopup`) and records the revealed menu items — so the AI knows which links are hidden until a toggle is clicked, and which interaction pattern to use
 - **ARIA snapshots**: captures the accessibility tree (roles + names) per page, enabling robust `get_by_role()` locators
 - Recognises production/staging URL variants in tickets and rewrites to your target host
-- **Per-ticket cache**: crawl snapshots + Bitbucket context are cached for 60 minutes (`%APPDATA%\QBot\cache\`). Re-running the same ticket skips the crawl entirely — no Chrome window, no re-login — as long as the saved auth state still exists
+- **Per-ticket cache**: crawl snapshots + Bitbucket context are cached for 60 minutes (in the QBot data directory, e.g. `%APPDATA%\QBot\cache\` on Windows). Re-running the same ticket skips the crawl entirely — no Chrome window, no re-login — as long as the saved auth state still exists
 
 ### Code Context (Bitbucket)
 
@@ -173,7 +174,15 @@ The BASE rules are hard-coded and cannot be removed by users — they exist to k
 
 ### Where profiles live
 
-`%APPDATA%\QBot\profiles.json`. The default profile is auto-seeded on first run with the original QBot prompt content split into editable sections, so existing users see no behavioural change until they edit it.
+In the QBot data directory, as `profiles.json`. The default profile is auto-seeded on first run with the original QBot prompt content split into editable sections, so existing users see no behavioural change until they edit it.
+
+The data directory is per-OS:
+
+| OS | Location |
+|----|----------|
+| **Windows** | `%APPDATA%\QBot\` |
+| **macOS** | `~/Library/Application Support/QBot/` |
+| **Linux** | `$XDG_CONFIG_HOME/QBot/` (fallback `~/.config/QBot/`) |
 
 ### Editor UI
 
@@ -337,7 +346,13 @@ Paste the model's output into the **Tech Stack & App-Specific Patterns** section
 
 ## Browser
 
-QBot uses **Google Chrome** with anti-detection flags. If Chrome is not found, falls back to Playwright's bundled Chromium.
+QBot uses **Google Chrome** with anti-detection flags when it can find it, probing the standard install locations per OS:
+
+- **Windows**: `Program Files\Google\Chrome`, `Program Files (x86)`, and `%LOCALAPPDATA%`
+- **macOS**: `/Applications/Google Chrome.app`
+- **Linux**: `google-chrome` / `chromium` on `PATH`, plus common `/usr/bin` and `/snap/bin` locations
+
+If Chrome is not found, QBot falls back to Playwright's bundled Chromium.
 
 ---
 
@@ -358,8 +373,8 @@ QBot uses several credentials:
 
 ### Credential Storage
 
-- **Location:** `%APPDATA%\QBot\settings.json` and `copilot_token.json` (user-scoped, not shared)
-- **Format:** Plaintext JSON (protected by Windows user-level file permissions)
+- **Location:** The QBot data directory (`settings.json` and `copilot_token.json`), user-scoped and not shared. Per-OS: `%APPDATA%\QBot\` (Windows), `~/Library/Application Support/QBot/` (macOS), `~/.config/QBot/` (Linux)
+- **Format:** Plaintext JSON (protected by OS user-level file permissions)
 - **Jira password:** Only saved if you check "Remember credentials" — otherwise discarded after login
 - **Copilot OAuth token:** Persisted across restarts, auto-refreshes session tokens (~30 min)
 - **Browser auth state:** Saved as `auth_state.json` in the generated tests directory (contains session cookies from the target app, not QBot credentials)
@@ -375,7 +390,7 @@ QBot uses several credentials:
 
 ## Settings
 
-Stored at `%APPDATA%\QBot\settings.json`. Access via the gear icon.
+Stored as `settings.json` in the QBot data directory (`%APPDATA%\QBot\` on Windows, `~/Library/Application Support/QBot/` on macOS, `~/.config/QBot/` on Linux). Access via the gear icon.
 
 ---
 
@@ -385,9 +400,15 @@ Stored at `%APPDATA%\QBot\settings.json`. Access via the gear icon.
 python build.py
 ```
 
-Produces `dist/QBot.exe` (~80 MB standalone).
+Produces a standalone artifact in the `dist/` folder, matching your OS:
 
-Pre-built releases are published at [github.com/asjadbut/qbot/releases](https://github.com/asjadbut/qbot/releases/tag/v1.0.0).
+| OS | Artifact |
+|----|----------|
+| **Windows** | `QBot.exe` (~80 MB) |
+| **macOS** | `QBot.app` |
+| **Linux** | `QBot` binary |
+
+Build on the OS you want to target (PyInstaller does not cross-compile). Pre-built Windows releases are published at [github.com/asjadbut/qbot/releases](https://github.com/asjadbut/qbot/releases/tag/v1.0.0).
 
 ---
 
@@ -396,7 +417,8 @@ Pre-built releases are published at [github.com/asjadbut/qbot/releases](https://
 ```
 qbot/
   config.py           # Runtime config dataclass
-  settings.py         # JSON persistence (%APPDATA%\QBot\)
+  paths.py            # Cross-platform data directory + Chrome location helpers
+  settings.py         # JSON persistence (per-OS QBot data directory)
   copilot_auth.py     # GitHub Copilot OAuth device flow + token management
   ai_generator.py     # AI prompt + Copilot API calls, token budgeting, repair/lint-fix calls
   profiles.py         # Team Profiles — per-team style/tech/selector/glossary

@@ -15,7 +15,9 @@ import time
 import threading
 import requests
 
-SETTINGS_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "QBot")
+from qbot.paths import app_data_dir
+
+SETTINGS_DIR = app_data_dir()
 TOKEN_FILE = os.path.join(SETTINGS_DIR, "copilot_token.json")
 
 # GitHub Copilot's public OAuth App client ID (same one used by copilot.vim / VS Code)
