@@ -10,13 +10,18 @@ from qbot.config import config
 class TicketView(ctk.CTkFrame):
     """Ticket input view with clear numbered step guide."""
 
-    def __init__(self, parent, jira_client: JiraClient, on_ticket_ready, on_settings):
+    def __init__(self, parent, jira_client: JiraClient, on_ticket_ready, on_settings, on_logout=None):
         super().__init__(parent, fg_color=COLORS["bg_dark"])
         self.jira = jira_client
         self.on_ticket_ready = on_ticket_ready
         self.on_settings = on_settings
+        self.on_logout = on_logout
         self.ticket: TicketDetails = None
         self._build_ui()
+
+    def _handle_logout(self):
+        if self.on_logout:
+            self.on_logout()
 
     # ──────────────────────────────────────────────────────────────────
     #  UI construction
@@ -28,6 +33,15 @@ class TicketView(ctk.CTkFrame):
         titlebar.pack_propagate(False)
         ctk.CTkLabel(titlebar, text="  ⬡ QBot  —  Jira Test Automation",
                      font=FONTS["small"], text_color=COLORS["text_dim"]).pack(side="left", padx=8)
+
+        # Logout button (far right)
+        ctk.CTkButton(
+            titlebar, text="Logout", width=72, height=26,
+            font=FONTS["small"], fg_color="transparent",
+            hover_color=COLORS["btn_neutral"], text_color=COLORS["text_dim"],
+            border_color=COLORS["border_bright"], border_width=1,
+            corner_radius=6, command=self._handle_logout,
+        ).pack(side="right", padx=(0, 12), pady=4)
 
         # Jira connected indicator with icon
         jira_status = ctk.CTkFrame(titlebar, fg_color="transparent")

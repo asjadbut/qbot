@@ -182,6 +182,44 @@ class AIGenerator:
         self._github_client = None
         self._copilot_client = None
         self._copilot_token_used = None  # track to detect refresh
+        # Usage tracking across the whole pipeline run
+        self.request_count = 0
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+
+    def _accumulate_usage(self, response, anthropic: bool = False):
+        """Add one response's token usage to the running totals."""
+        self.request_count += 1
+        usage = getattr(response, "usage", None)
+        if not usage:
+            return
+        if anthropic:
+            self.prompt_tokens += getattr(usage, "input_tokens", 0) or 0
+            self.completion_tokens += getattr(usage, "output_tokens", 0) or 0
+        else:
+            self.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
+            self.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+
+    def _active_model(self) -> str:
+        return {
+            "github": config.github_model,
+            "groq": getattr(config, "groq_model", ""),
+            "openai": getattr(config, "openai_model", ""),
+            "anthropic": getattr(config, "anthropic_model", ""),
+        }.get(config.ai_provider, "")
+
+    def usage_report(self) -> str:
+        """Human-readable summary of AI requests and tokens used this run."""
+        if self.request_count == 0:
+            return ""
+        model = self._active_model()
+        total = self.prompt_tokens + self.completion_tokens
+        lines = [f"AI calls : {self.request_count} request(s) to {model or 'model'}"]
+        if total > 0:
+            lines.append(
+                f"Tokens   : {self.prompt_tokens:,} in + {self.completion_tokens:,} out "
+                f"= {total:,} total")
+        return "\n".join(lines)
 
     def _get_openai(self):
         if not self._openai_client:
@@ -369,6 +407,7 @@ class AIGenerator:
                 ],
                 **token_kwarg,
             )
+            self._accumulate_usage(response)
             return self._extract_openai_text(response, model)
 
         elif config.ai_provider == "groq":
@@ -382,6 +421,7 @@ class AIGenerator:
                 temperature=0.2,
                 max_tokens=8000,
             )
+            self._accumulate_usage(response)
             return self._extract_openai_text(response, config.groq_model)
 
         elif config.ai_provider == "openai":
@@ -395,6 +435,7 @@ class AIGenerator:
                 temperature=0.2,
                 max_tokens=8000,
             )
+            self._accumulate_usage(response)
             return self._extract_openai_text(response, config.openai_model)
 
         elif config.ai_provider == "anthropic":
@@ -406,6 +447,7 @@ class AIGenerator:
                 temperature=0.2,
                 max_tokens=8000,
             )
+            self._accumulate_usage(response, anthropic=True)
             return self._extract_anthropic_text(response, config.anthropic_model)
 
         else:

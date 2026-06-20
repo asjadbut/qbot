@@ -12,10 +12,10 @@ Jira Ticket → Crawl Target Pages → Fetch Code Changes → AI Generates Tests
 2. **Crawl** the target app pages mentioned in the ticket — captures real DOM (buttons, inputs, links, selectors), expands dropdown menus, and takes ARIA accessibility snapshots. Cached per ticket for fast re-runs.
 3. **Fetch code changes** from Bitbucket using the ticket key (e.g. PDM-7200) — finds linked commits and extracts diffs
 4. **AI generates** Playwright tests using ticket requirements, real page structure, and actual code changes
-5. **Lint** the generated code against the crawled DOM — hallucinated selectors and known-bad patterns are flagged and auto-fixed by a targeted AI call before execution
+5. **Lint** the generated code against the crawled DOM — hallucinated selectors and known-bad patterns are flagged and auto-fixed by the AI in a bounded loop (up to 2 passes) until the code lints clean, before execution
 6. **Playwright executes** the tests in Google Chrome with saved auth state (flaky failures retried once)
-7. **AI repairs failures** — failing tests + their real error output go back to the model for a fix, then re-run (up to 2 rounds)
-8. **Results** displayed with pass/fail per test, human-readable failure explanations, and raw pytest output
+7. **AI repairs failures** — failing tests + their real error output go back to the model for a fix, then only those tests are re-run (up to 2 rounds)
+8. **Results** displayed with pass/fail per test, human-readable failure explanations, raw pytest output, and an **AI usage summary** (number of requests + tokens used across the run)
 
 ---
 
@@ -91,45 +91,57 @@ Add your app URLs in **Settings → Target Application URLs**. These populate th
 
 ## Pipeline Details
 
-### Crawl
+Each step below contributes a different kind of context, and every piece is *injected into the AI prompt* inside a clearly labelled block so the model knows exactly what it is allowed to rely on. For each stage: **how it works**, **how it helps**, and **how its output reaches the model**.
 
-- Opens Google Chrome with anti-detection (spoofed `navigator.webdriver`, custom user agent)
-- If a login page is detected, waits up to 5 minutes for you to log in
-- Saves auth state (`auth_state.json`) for reuse during test execution
-- Captures page snapshots: headings, buttons, inputs, links, forms, visible text, and `data-testid` attributes
+### 1. Crawl the target pages
+
+**How it works** — Opens Google Chrome with anti-detection (spoofed `navigator.webdriver`, custom user agent). If a login page is detected it waits up to 5 minutes for you to log in, then saves the authenticated browser state to `auth_state.json` for reuse in the execution step. It visits every URL found in the ticket and captures a simplified snapshot of each page — headings, buttons (with their best selector), inputs (with labels), links, forms, native `<select>` dropdowns, and `data-testid` attributes. It also **clicks dropdown toggles** (`.dropdown-toggle`, `data-toggle`, `aria-haspopup`) to reveal items that stay hidden until clicked, and records an **ARIA accessibility tree** (roles + names) per page.
+
+**How it helps** — The AI never has to guess what the page looks like. It writes tests using *real* selectors, button labels and field names that actually exist on the page — the single biggest defence against hallucinated locators. The ARIA tree enables robust `get_by_role()` locators, and the expanded dropdowns teach the AI the correct interaction pattern (click the toggle first, then assert the revealed item).
+
+**How it's injected** — `get_snapshots_text()` formats every snapshot into one block added to the user prompt under the heading `## REAL PAGE DOM SNAPSHOTS (from crawling the actual app)`, prefixed with *"Use ONLY the selectors, button labels, link text and form fields shown below. Do NOT invent selectors."* Each page becomes a section listing its Buttons/Actions, Inputs/Fields, Links, Dropdowns, hidden menu items, Forms, the accessibility tree, and a visible-text excerpt.
+
+**Additional behaviour**
 - **Expands dropdown menus**: clicks visible dropdown toggles (`.dropdown-toggle`, `data-toggle`, `aria-haspopup`) and records the revealed menu items — so the AI knows which links are hidden until a toggle is clicked, and which interaction pattern to use
 - **ARIA snapshots**: captures the accessibility tree (roles + names) per page, enabling robust `get_by_role()` locators
 - Recognises production/staging URL variants in tickets and rewrites to your target host
 - **Per-ticket cache**: crawl snapshots + Bitbucket context are cached for 60 minutes (in the QBot data directory, e.g. `%APPDATA%\QBot\cache\` on Windows). Re-running the same ticket skips the crawl entirely — no Chrome window, no re-login — as long as the saved auth state still exists
 
-### Code Context (Bitbucket)
+### 2. Fetch code changes from Bitbucket
 
-- After crawling, searches Bitbucket Cloud for commits matching the Jira ticket key (e.g. `PDM-7200`)
-- Scans commit messages across recent history and merged pull requests
-- Filters out merge/sync commits ("Merged in...", "Merge branch...") that contain no real changes
-- Extracts unified diffs, filtering out non-code files (minified JS, lock files, images, migrations, build artifacts)
-- Up to 10 commits, 10K chars per diff, 30K total \u2014 fits within Copilot API's 200K context window
+**How it works** — Using the Jira key (e.g. `PDM-7200`), it scans up to ~150 recent commits and matches the key as a whole word, skipping merge/sync commits ("Merged in...", "Merge branch...") that carry no real changes. If no commit mentions the key, it falls back to searching merged pull requests whose title references it. For each matching commit it fetches the unified diff and filters out non-code files (minified JS, lock files, images, migrations, build artifacts).
+
+**How it helps** — The diff shows exactly what a developer changed for this ticket: the literal `id` / `class` / `data-testid` they added (so the AI uses real selectors *and* the linter gains a second source of truth), conditional logic such as `v-if="hasPermission"` or feature flags (so the AI can write negative and permission tests, not just happy paths), and the intent of the change (so tests stay scoped to the new behaviour instead of pre-existing UI).
+
+**How it's injected** — `format_code_context()` builds a `## CODE CHANGES (from repository commits linked to this ticket)` block — a list of the matched commits followed by each filtered diff — appended to the user prompt after the DOM snapshots. The prompt explicitly tells the AI to read selectors, CSS classes and element IDs from the diff and to use the conditional logic to drive positive/negative coverage. When the prompt is too large, this code block is the first context trimmed (whole commit sections are dropped from the end, never sliced mid-hunk).
+
+**Limits**
+- Up to 10 commits, 10K chars per diff, 30K total — fits within Copilot API's 200K context window
 - Code diffs help the AI understand implementation details: conditional logic, selectors, feature flags, and permission checks
 
-### AI Test Generation
+### 3. AI generates the tests
 
-- Sends ticket text + real page context + code diffs to the selected AI model
-- Generated tests use actual selectors from the crawled pages and understand implementation details from code changes
-- The AI's mindset is driven by the active **Team Profile** (see [Team Profiles](#team-profiles) below) so different teams can use different style rules, tech-stack hints, selector conventions and product glossaries
+**How it works** — The ticket text, the DOM-snapshot block and the code-changes block are combined into one user prompt and sent to the selected model. The reply is stripped of code fences, checked for `def test_`, and parsed as Python — a truncated completion triggers one "be more concise" retry rather than failing later at pytest collection.
+
+**How the prompt is composed / injected** — The *system* prompt is built at runtime from two layers: immutable **BASE rules** (the fixture / auth / output contract the runner depends on) plus the active **Team Profile** sections (style rules, tech-stack hints, selector conventions, product glossary — see [Team Profiles](#team-profiles)). This layering is what lets different teams get tests in their own style without touching the pipeline. The *user* prompt is the assembled ticket + DOM + diff context from steps 1–2.
+
+**Further safeguards**
 - **Token budgeting**: prompt size is estimated up front and contexts are trimmed *before* sending (priority: ticket > page DOM > code diffs). Code context is trimmed by dropping whole commit-diff sections, never by slicing mid-hunk
 - Strips AI-generated fixture redefinitions (AST-based) to avoid conflicts with conftest
 - Validates output contains `def test_` and parses as valid Python — a truncated completion triggers one "be more concise" retry instead of failing later at pytest collection
 - Auto-fallback: if the model still reports the prompt is too large or returns no choices, truncates code context progressively (full → 1/3 → none)
 
-### Lint + Auto-Fix
+### 4. Lint + auto-fix
 
-Before any test executes, the generated code is checked by a deterministic linter (`test_linter.py`) against the crawled DOM snapshots:
+**How it works / how it helps** — Before any test executes, a deterministic linter (`test_linter.py`) checks the generated code against the crawled DOM snapshots, catching hallucinated selectors and known-bad assertions in code instead of hoping the model complied. **How it's injected** — every flagged issue is formatted into a list and sent back to the AI in *one* targeted fix call together with the DOM snapshots; the corrected file replaces the original (if the fix fails, the original is kept — the linter never blocks the pipeline). The checks:
 
 - **Errors** (definitely wrong): `to_have_title()`, `to_have_url("/relative")`, `.check()`/`.is_checked()` on elements the snapshot proves are not native checkboxes
 - **Warnings** (suspicious): exact `to_have_count(N)` with guessed numbers, `#id` / `[name=]` / `text=` / `get_by_text()` referencing selectors or text never seen in any crawled page (hallucination detection)
-- Flagged issues are sent to the AI in one targeted fix call along with the DOM snapshots; the corrected file replaces the original. If the fix fails, the original code is kept — the linter never blocks the pipeline
+- **Bounded fix loop (up to 2 passes)**: flagged issues + the DOM snapshots are sent to the AI, the corrected file is re-linted, and the cycle repeats until the code lints clean or the pass limit is hit. This catches cases where a fix leaves (or introduces) a new issue, instead of letting it through after a single pass. If a fix call fails, the current code is kept — the linter never blocks the pipeline
 
-### Test Execution
+### 5. Execute the tests
+
+**How it works / how auth is injected** — The runner writes the test file (after AST-stripping any fixtures that would shadow the conftest) and generates a fresh `conftest.py` that launches **one** browser for the whole session and loads `auth_state.json` from the crawl step — so tests start already logged in. Each test then gets a fresh tab in that shared authenticated context. Execution details:
 
 - Runs via `pytest` with `-v --tb=short -p no:playwright --junitxml=...`
 - Uses the correct Python interpreter (`sys.executable` from source; `python` on PATH from the frozen exe)
@@ -140,18 +152,31 @@ Before any test executes, the generated code is checked by a deterministic linte
 - Failed tests show human-readable failure explanations (e.g. "Timed out after 30s — the element exists but is not visible") plus the full traceback for the repair loop
 - Raw pytest output shown in Test Results tab for debugging failures
 
-### AI Repair Loop (Self-Healing)
+### 6. AI repair loop (self-healing)
 
-If any tests fail after execution:
+**How it works** — If any tests fail, QBot tries to heal them automatically (up to 2 rounds). **How it's injected** — only the failing tests plus their *actual* pytest error output and the DOM snapshots are sent back to the model; passing tests are kept verbatim. The model returns a corrected file, which is AST-validated and re-executed. When everything passes (or both rounds are spent) the loop stops. Specifically:
 
 - Failing tests + their actual pytest errors + the DOM snapshots are sent back to the model
 - The model fixes **only** the failing tests (passing tests are kept verbatim) — or deletes a test if the DOM proves its assertion can never pass
-- The repaired file is re-executed; up to **2 repair rounds**, stopping early when everything passes
+- **Only the failing tests are re-run** (targeted by pytest node id), not the whole suite — so repair rounds are fast and cheap, and already-passing tests are never re-executed or at risk of being re-broken. The fresh results are merged back into the full picture
+- If a fix renames or deletes tests so their node ids no longer resolve, QBot falls back to a full re-run and rebuilds the results
+- Up to **2 repair rounds**, stopping early when everything passes
 - Repaired code is AST-validated; any bad output keeps the previous version, so the pipeline never regresses
 
 ### Replay
 
 After pipeline completes, click **▶ Replay Tests** to re-run without regenerating.
+
+### AI usage summary
+
+The final report prints how much the AI was used for the run — the total number of requests (generation + each lint-fix pass + each repair round) and the prompt / completion / total **token** counts pulled from each model response:
+
+```
+AI calls : 3 request(s) to claude-sonnet-4.5
+Tokens   : 36,000 in + 9,000 out = 45,000 total
+```
+
+Token counts come straight from the provider's `usage` data, so they're exact when the model returns it (the line is omitted if a provider doesn't report usage).
 
 ---
 

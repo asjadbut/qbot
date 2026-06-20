@@ -20,6 +20,15 @@ class LoginView(ctk.CTkFrame):
         self.on_settings = on_settings
         self._build_ui()
         self._load_saved()
+        # Auto-connect on startup when credentials were remembered
+        self.after(300, self._maybe_auto_login)
+
+    def _maybe_auto_login(self):
+        """Automatically connect when 'Remember credentials' is set and fields are filled."""
+        s = load_settings()
+        if (s.get("remember_jira") and self.url_entry.get().strip()
+                and self.user_entry.get().strip() and self.pass_entry.get().strip()):
+            self._handle_login()
 
     def _build_ui(self):
         # VS Code–style title bar strip

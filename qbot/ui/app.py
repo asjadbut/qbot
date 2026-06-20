@@ -6,7 +6,8 @@ from qbot.ui.ticket_view import TicketView
 from qbot.ui.runner_view import RunnerView
 from qbot.ui.settings_dialog import SettingsDialog
 from qbot.jira_client import JiraClient, TicketDetails
-from qbot.settings import load_settings
+from qbot.settings import load_settings, save_settings
+from qbot.config import config
 
 # Resolve icon path (works both in dev and PyInstaller bundle)
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -80,8 +81,22 @@ class QBotApp(ctk.CTk):
             jira_client=self.jira_client,
             on_ticket_ready=self._on_ticket_ready,
             on_settings=self._open_settings,
+            on_logout=self._logout,
         )
         self.current_view.pack(fill="both", expand=True)
+
+    def _logout(self):
+        """Clear the current session so the user can sign in with another account."""
+        self.jira_client = None
+        config.jira_url = ""
+        config.jira_username = ""
+        config.jira_password = ""
+        # Disable auto-login and drop the saved password so we don't sign back in
+        s = load_settings()
+        s["remember_jira"] = False
+        s.pop("jira_password", None)
+        save_settings(s)
+        self._show_login()
 
     def _on_ticket_ready(self, ticket: TicketDetails, ticket_text: str):
         self._show_runner_view(ticket, ticket_text)

@@ -14,6 +14,10 @@ from qbot.config import config
 # for a fix, then re-executed. Bounded to avoid infinite loops / token burn.
 MAX_REPAIR_ROUNDS = 2
 
+# Max lint -> AI-fix passes before generation gives up and runs the tests as-is.
+# Each pass re-lints the corrected code; the loop stops early once it's clean.
+MAX_LINT_PASSES = 2
+
 
 class RunnerView(ctk.CTkFrame):
     """Pipeline: Crawl Pages -> AI Generates Tests -> Playwright Executes -> Report."""
@@ -378,33 +382,45 @@ class RunnerView(ctk.CTkFrame):
                 on_log=self._log_threadsafe,
             )
 
-            # Lint against the real DOM snapshots; fix flagged issues in one
-            # targeted AI call before ever executing.
+            # Lint against the real DOM snapshots; fix flagged issues with the
+            # AI before ever executing. Loop up to MAX_LINT_PASSES times so a
+            # fix that leaves (or introduces) issues gets another attempt,
+            # stopping early as soon as the code lints clean.
             issues = lint_test_code(self.generated_code, self.crawler.snapshots)
-            if issues:
-                issues_text = format_issues(issues)
-                n_err = sum(1 for i in issues if i.severity == "error")
-                n_warn = len(issues) - n_err
-                self.after(0, lambda: self._log(
-                    f"   Linter: {n_err} error(s), {n_warn} warning(s) in generated code:"))
-                for issue in issues[:15]:
-                    line = str(issue)
-                    self.after(0, lambda l=line: self._log(f"      {l}"))
-                self.after(0, lambda: self._log("   Asking AI to fix flagged issues..."))
-                try:
-                    self.generated_code = self.ai.fix_lint_issues(
-                        self.generated_code, issues_text, self.page_context)
-                    remaining = lint_test_code(self.generated_code, self.crawler.snapshots)
-                    n_rem_err = sum(1 for i in remaining if i.severity == "error")
-                    self.after(0, lambda: self._log(
-                        f"   Lint fix applied ({n_rem_err} error(s) remaining "
-                        f"of {len(remaining)} issue(s))."))
-                except Exception as fix_err:
-                    msg = str(fix_err)
-                    self.after(0, lambda m=msg: self._log(
-                        f"   Lint fix failed ({m}) — continuing with original code."))
-            else:
+            if not issues:
                 self.after(0, lambda: self._log("   Linter: no issues found."))
+            else:
+                for lint_pass in range(1, MAX_LINT_PASSES + 1):
+                    n_err = sum(1 for i in issues if i.severity == "error")
+                    n_warn = len(issues) - n_err
+                    self.after(0, lambda p=lint_pass, e=n_err, w=n_warn: self._log(
+                        f"   Linter pass {p}/{MAX_LINT_PASSES}: {e} error(s), {w} warning(s):"))
+                    for issue in issues[:15]:
+                        line = str(issue)
+                        self.after(0, lambda l=line: self._log(f"      {l}"))
+
+                    issues_text = format_issues(issues)
+                    self.after(0, lambda: self._log("   Asking AI to fix flagged issues..."))
+                    try:
+                        self.generated_code = self.ai.fix_lint_issues(
+                            self.generated_code, issues_text, self.page_context)
+                    except Exception as fix_err:
+                        msg = str(fix_err)
+                        self.after(0, lambda m=msg: self._log(
+                            f"   Lint fix failed ({m}) — continuing with current code."))
+                        break
+
+                    issues = lint_test_code(self.generated_code, self.crawler.snapshots)
+                    n_rem_err = sum(1 for i in issues if i.severity == "error")
+                    self.after(0, lambda e=n_rem_err, tot=len(issues): self._log(
+                        f"   Lint fix applied ({e} error(s) remaining of {tot} issue(s))."))
+
+                    if not issues:
+                        self.after(0, lambda: self._log("   Linter: all issues resolved."))
+                        break
+                else:
+                    self.after(0, lambda n=len(issues): self._log(
+                        f"   Linter: {n} issue(s) remain after {MAX_LINT_PASSES} passes — continuing."))
 
             filepath = self.runner.write_test_file(self.generated_code)
 
@@ -462,11 +478,16 @@ class RunnerView(ctk.CTkFrame):
 
         self.after(0, lambda: self._set_step("repair", "running"))
 
+        # Master view of every test keyed by name. Each repair round re-runs
+        # ONLY the failing tests and merges their fresh results back in here, so
+        # already-passing tests are never re-executed and can't be re-broken.
+        merged = {t["name"]: t for t in result.individual_results}
+
         for round_no in range(1, MAX_REPAIR_ROUNDS + 1):
             if self._cancelled.is_set():
                 return
 
-            failures = [t for t in result.individual_results
+            failures = [t for t in merged.values()
                         if t["status"] in ("FAILED", "ERROR")]
             if not failures:
                 break
@@ -494,11 +515,30 @@ class RunnerView(ctk.CTkFrame):
             if self._cancelled.is_set():
                 return
 
-            self.after(0, lambda: self._log("   Re-running repaired tests..."))
-            result = self.runner.run_tests()
+            # Re-run ONLY the previously-failing tests (by pytest node id)
+            # instead of the whole suite — faster and avoids re-touching passes.
+            node_ids = [t["node_id"] for t in failures if t.get("node_id")]
+            self.after(0, lambda n=len(node_ids) or len(failures): self._log(
+                f"   Re-running {n} repaired test(s)..."))
+
+            subset = (self.runner.run_tests(node_ids=node_ids)
+                      if node_ids else self.runner.run_tests())
+
+            if subset.total == 0:
+                # Node ids no longer resolve (a fix renamed or deleted tests) —
+                # fall back to a full run and rebuild the picture from scratch.
+                self.after(0, lambda: self._log(
+                    "   (targeted re-run matched no tests — running full suite)"))
+                subset = self.runner.run_tests()
+                merged = {t["name"]: t for t in subset.individual_results}
+            else:
+                for t in subset.individual_results:
+                    merged[t["name"]] = t
+
+            result = self._aggregate_results(merged, subset.output)
             self.exec_result = result
 
-            self.after(0, lambda: self._update_stats(result))
+            self.after(0, lambda r=result: self._update_stats(r))
             icon = "PASS" if result.success else "FAIL"
             self.after(0, lambda r=result, i=icon: self._log(
                 f"   {i}: {r.passed} passed, {r.failed} failed, "
@@ -514,6 +554,23 @@ class RunnerView(ctk.CTkFrame):
             "repair", "done" if (final and final.success) else "error"))
         self.after(0, lambda: self._set_step(
             "execute", "done" if (final and final.success) else "error"))
+
+    @staticmethod
+    def _aggregate_results(merged: dict, output: str) -> TestResult:
+        """Rebuild an aggregate TestResult from the merged per-test map after a
+        targeted repair re-run (only the failing subset was actually executed)."""
+        items = list(merged.values())
+        passed = sum(1 for t in items if t["status"] == "PASSED")
+        failed = sum(1 for t in items if t["status"] == "FAILED")
+        errors = sum(1 for t in items if t["status"] == "ERROR")
+        skipped = sum(1 for t in items if t["status"] == "SKIPPED")
+        total = len(items)
+        return TestResult(
+            passed=passed, failed=failed, errors=errors, skipped=skipped,
+            total=total, output=output,
+            success=(failed == 0 and errors == 0 and total > 0),
+            individual_results=items,
+        )
 
     def _show_results(self, result: TestResult):
         self.results_text.delete("1.0", "end")
@@ -565,6 +622,7 @@ class RunnerView(ctk.CTkFrame):
         self.after(0, lambda: self._set_step("report", "running"))
 
         final = self.exec_result
+        usage = self.ai.usage_report()
         if final:
             summary = (
                 f"\n{'=' * 50}\n"
@@ -574,10 +632,13 @@ class RunnerView(ctk.CTkFrame):
                 f"Summary: {self.ticket.summary}\n"
                 f"Results: {final.passed} passed  |  {final.failed} failed  |  {final.errors} errors\n"
                 f"Tests  : {self.runner.test_dir}\n"
-                f"{'=' * 50}"
+                + (f"{usage}\n" if usage else "")
+                + f"{'=' * 50}"
             )
         else:
             summary = "\nPipeline complete."
+            if usage:
+                summary += f"\n{usage}"
 
         self.after(0, lambda: self._log(summary))
         self.after(0, lambda: self._set_step("report", "done"))

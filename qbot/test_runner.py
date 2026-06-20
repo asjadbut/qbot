@@ -135,8 +135,13 @@ class TestRunner:
                 self._reruns_available = False
         return self._reruns_available
 
-    def run_tests(self, filepath: str = None) -> TestResult:
-        """Execute tests using pytest and return results."""
+    def run_tests(self, filepath: str = None, node_ids: list[str] | None = None) -> TestResult:
+        """Execute tests using pytest and return results.
+
+        If node_ids is provided, only those specific tests are run (used by the
+        repair loop to re-run just the failing tests instead of the whole
+        suite). Node ids are resolved relative to the test directory (cwd).
+        """
         junit_path = os.path.join(self.test_dir, ".qbot_results.xml")
         if os.path.exists(junit_path):
             try:
@@ -144,9 +149,10 @@ class TestRunner:
             except OSError:
                 pass
 
+        targets = list(node_ids) if node_ids else [filepath or self.test_dir]
         cmd = [
             self._python_command(), "-m", "pytest",
-            filepath or self.test_dir,
+            *targets,
             "-v",
             "--tb=short",
             "--no-header",
@@ -210,6 +216,7 @@ class TestRunner:
 
         for case in root.iter("testcase"):
             name = case.get("name", "unknown")
+            node_id = self._build_node_id(case.get("classname", ""), name)
             failure = case.find("failure")
             error = case.find("error")
             skip = case.find("skipped")
@@ -218,7 +225,7 @@ class TestRunner:
                 failed += 1
                 raw = (failure.get("message") or "") + "\n" + (failure.text or "")
                 individual.append({
-                    "name": name, "status": "FAILED",
+                    "name": name, "node_id": node_id, "status": "FAILED",
                     "message": self._humanize_failure(raw),
                     "detail": raw.strip(),
                 })
@@ -226,19 +233,19 @@ class TestRunner:
                 errors += 1
                 raw = (error.get("message") or "") + "\n" + (error.text or "")
                 individual.append({
-                    "name": name, "status": "ERROR",
+                    "name": name, "node_id": node_id, "status": "ERROR",
                     "message": self._humanize_failure(raw),
                     "detail": raw.strip(),
                 })
             elif skip is not None:
                 skipped += 1
                 individual.append({
-                    "name": name, "status": "SKIPPED",
+                    "name": name, "node_id": node_id, "status": "SKIPPED",
                     "message": skip.get("message", ""), "detail": "",
                 })
             else:
                 passed += 1
-                individual.append({"name": name, "status": "PASSED", "message": "", "detail": ""})
+                individual.append({"name": name, "node_id": node_id, "status": "PASSED", "message": "", "detail": ""})
 
         total = passed + failed + errors + skipped
         if total == 0:
@@ -379,6 +386,18 @@ def page(_pw_session):
         # last part may have " PASSED" etc. appended
         return parts[-1].split()[0] if parts else line
 
+    @staticmethod
+    def _build_node_id(classname: str, name: str) -> str:
+        """Construct a pytest node id (e.g. test_generated.py::TestClass::test_x)
+        from a JUnit testcase's classname + name, so the repair loop can target
+        individual failing tests instead of re-running the whole suite."""
+        if not classname:
+            return name
+        parts = classname.split(".")
+        module = parts[0]
+        classes = parts[1:]
+        return "::".join([f"{module}.py"] + classes + [name])
+
     def _parse_results(self, output: str) -> TestResult:
         """Parse pytest output to extract test results."""
         import re
@@ -393,22 +412,23 @@ def page(_pw_session):
 
             # Parse individual test results (verbose mode: "path::Class::test PASSED")
             if "::" in line_stripped:
+                node_id = line_stripped.split()[0]
                 if " PASSED" in line_stripped:
                     name = self._extract_test_name(line_stripped)
-                    individual.append({"name": name, "status": "PASSED", "message": ""})
+                    individual.append({"name": name, "node_id": node_id, "status": "PASSED", "message": ""})
                 elif " FAILED" in line_stripped:
                     name = self._extract_test_name(line_stripped)
                     raw_detail = failure_details.get(name, line_stripped)
                     reason = self._humanize_failure(raw_detail)
-                    individual.append({"name": name, "status": "FAILED", "message": reason})
+                    individual.append({"name": name, "node_id": node_id, "status": "FAILED", "message": reason})
                 elif " ERROR" in line_stripped:
                     name = self._extract_test_name(line_stripped)
                     raw_detail = failure_details.get(name, line_stripped)
                     reason = self._humanize_failure(raw_detail)
-                    individual.append({"name": name, "status": "ERROR", "message": reason})
+                    individual.append({"name": name, "node_id": node_id, "status": "ERROR", "message": reason})
                 elif " SKIPPED" in line_stripped:
                     name = self._extract_test_name(line_stripped)
-                    individual.append({"name": name, "status": "SKIPPED", "message": ""})
+                    individual.append({"name": name, "node_id": node_id, "status": "SKIPPED", "message": ""})
 
             # Parse summary line: "= 5 failed, 1 passed in 101.31s ="
             m = re.match(r'^=+\s(.+?)\s=+$', line_stripped)
